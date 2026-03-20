@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="addon">
+  <id>org.cockpit_project.oscap</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Cockpit Compliance</name>
+  <summary>OpenSCAP compliance scanning for Cockpit</summary>
+  <description>
+    <p>
+      OpenSCAP compliance scanning and remediation integrated into Cockpit.
+      Run SCAP security profiles, review scan results, apply remediations,
+      customize profiles with tailoring, and schedule automated scans — all
+      from the Cockpit web console.
+    </p>
+  </description>
+  <extends>org.cockpit_project.cockpit</extends>
+  <launchable type="cockpit-manifest">oscap</launchable>
+  <url type="homepage">https://github.com/swiftraccoon/cockpit-oscap</url>
+  <url type="bugtracker">https://github.com/swiftraccoon/cockpit-oscap/issues</url>
+  <update_contact>cockpit-devel_AT_lists.fedorahosted.org</update_contact>
+  <developer id="org.cockpit-project">
+    <name>Cockpit Project</name>
+  </developer>
+</component>

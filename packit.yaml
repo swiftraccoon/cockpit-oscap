@@ -1,0 +1,36 @@
+# Enable RPM builds and running integration tests in PRs through https://packit.dev/
+# To use this, enable Packit-as-a-service in GitHub: https://packit.dev/docs/packit-as-a-service/
+# See https://packit.dev/docs/configuration/ for the format of this file
+
+upstream_package_name: cockpit-oscap
+specfile_path: cockpit-oscap.spec
+# use the nicely formatted release description from our upstream release, instead of git shortlog
+copy_upstream_release_description: true
+
+srpm_build_deps:
+  - jq
+  - make
+  - nodejs-npm
+
+actions:
+  post-upstream-clone:
+    - make cockpit-oscap.spec
+    # replace Source1 manually, as create-archive: can't handle multiple tarballs
+    - make node-cache
+    - sh -c 'sed -i "/^Source1:/ s/https:.*/$(ls *-node*.tar.xz)/" cockpit-*.spec'
+  create-archive: make dist
+  get-current-version: make print-version
+
+jobs:
+  - job: tests
+    trigger: pull_request
+    targets: &test_targets
+      - fedora-all
+      - fedora-latest-stable-aarch64
+      - centos-stream-9
+      - centos-stream-9-aarch64
+      - centos-stream-10
+
+  - job: copr_build
+    trigger: pull_request
+    targets: *test_targets

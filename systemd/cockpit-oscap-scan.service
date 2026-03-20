@@ -1,0 +1,9 @@
+[Unit]
+Description=Cockpit OpenSCAP Compliance Scan
+Documentation=man:oscap(8)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/share/cockpit/oscap/oscap-bridge.py scan
+StandardOutput=null
+StandardError=journal

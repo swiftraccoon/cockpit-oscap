@@ -1,0 +1,5 @@
+{
+    "requires": { "cockpit": "300" },
+    "conditions": [{ "path-exists": "/usr/bin/oscap" }],
+    "menu": { "index": { "label": "Compliance", "order": 15 } }
+}

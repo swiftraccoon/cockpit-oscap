@@ -1,0 +1,10 @@
+[Unit]
+Description=Scheduled OpenSCAP Compliance Scan
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
