@@ -496,6 +496,10 @@ def _parse_arf_results(arf_path: str) -> ParsedArfResult:
         result_el = rr.find(f"{{{NS_XCCDF}}}result")
         result_text = result_el.text.strip() if result_el is not None and result_el.text else "unknown"
 
+        # Skip rules not selected by the profile
+        if result_text == RuleResult.NOTSELECTED:
+            continue
+
         title = rule_titles.get(rule_id, "")
 
         results.append(RuleResultItem(
@@ -512,7 +516,7 @@ def _parse_arf_results(arf_path: str) -> ParsedArfResult:
             fail_count += 1
         elif result_text == RuleResult.ERROR:
             error_count += 1
-        # notapplicable, notchecked, notselected, informational, fixed — excluded from score
+        # notapplicable, notchecked, informational, fixed — excluded from score
 
     denominator = pass_count + fail_count + error_count
     score = (pass_count / denominator * 100.0) if denominator > 0 else 0.0
@@ -1014,24 +1018,25 @@ def cmd_scan(args: list[str]) -> None:
         output_error(f"failed to parse ARF results XML: {exc}")
         return
 
-    # Save JSON alongside ARF
+    # Save JSON alongside ARF — include metadata so the file is self-contained
+    status = ScanStatus.INTERRUPTED if interrupted else ScanStatus.COMPLETE
     json_path = arf_path.replace(".arf.xml", ".json")
+    saved: ScanResult = {
+        "score": parsed["score"],
+        "results": parsed["results"],
+        "arf_path": arf_path,
+        "json_path": json_path,
+        "timestamp": timestamp,
+        "profile_id": profile_id,
+        "status": status,
+    }
     with Path(json_path).open("w") as f:
-        json.dump(parsed, f, indent=2)
+        json.dump(saved, f, indent=2)
         f.write("\n")
 
     _prune_old_results(results_dir)
 
-    status = ScanStatus.INTERRUPTED if interrupted else ScanStatus.COMPLETE
-    output_json(ScanResult(
-        score=parsed["score"],
-        results=parsed["results"],
-        arf_path=arf_path,
-        json_path=json_path,
-        timestamp=timestamp,
-        profile_id=profile_id,
-        status=status,
-    ))
+    output_json(saved)
 
 
 def cmd_generate_fix(args: list[str]) -> None:

@@ -26,10 +26,12 @@ function getPage(): PageName {
 
 export const Application = () => {
     const [currentPage, setCurrentPage] = useState<PageName>(getPage());
+    const [locationPath, setLocationPath] = useState<string[]>([...cockpit.location.path]);
 
     useEffect(() => {
         const onLocationChanged = () => {
             setCurrentPage(getPage());
+            setLocationPath([...cockpit.location.path]);
         };
         cockpit.addEventListener("locationchanged", onLocationChanged);
         return () => {
@@ -43,21 +45,19 @@ export const Application = () => {
     };
 
     const renderPage = () => {
-        const path = cockpit.location.path;
-
         switch (currentPage) {
         case "overview":
             return <OverviewPage />;
         case "profiles":
-            if (path.length > 1) {
-                return <TailoringEditor profileId={path[1]} />;
+            if (locationPath.length > 1) {
+                return <TailoringEditor profileId={locationPath[1]} />;
             }
             return <ProfilesPage />;
         case "scan":
             return <ScanPage />;
         case "results":
-            if (path.length > 1) {
-                return <ResultDetailPage resultId={path[1]} />;
+            if (locationPath.length > 1) {
+                return <ResultDetailPage resultId={locationPath[1]} />;
             }
             return <ResultsPage />;
         case "schedule":

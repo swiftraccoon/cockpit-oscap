@@ -54,13 +54,18 @@ function summarize(filename: string, data: ScanResult): ScanSummary {
     };
 }
 
-/** Format a timestamp to a localized date/time string. */
+/** Format a timestamp to a localized date/time string.
+ *  Handles the bridge's compact format: "2026-04-08T025531" → "2026-04-08T02:55:31"
+ */
 function formatTimestamp(ts: string): string {
-    try {
-        return new Date(ts).toLocaleString();
-    } catch {
-        return ts;
-    }
+    // Insert colons into compact HHMMSS portion if needed
+    const normalized = ts.replace(
+        /T(\d{2})(\d{2})(\d{2})$/,
+        "T$1:$2:$3"
+    );
+    const date = new Date(normalized);
+    if (isNaN(date.getTime())) return ts;
+    return date.toLocaleString();
 }
 
 /** Status label color mapping. */
@@ -163,7 +168,7 @@ export const ResultsPage: React.FunctionComponent = () => {
             let cmp = 0;
             switch (sortIndex) {
             case COL_DATE:
-                cmp = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+                cmp = a.timestamp.localeCompare(b.timestamp);
                 break;
             case COL_PROFILE:
                 cmp = a.profileId.localeCompare(b.profileId);

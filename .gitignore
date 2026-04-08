@@ -23,7 +23,9 @@ __pycache__/
 /cockpit-*.spec
 /cockpit-*.tar.xz
 /cockpit-navigator.spec
+/Containerfile
 /dist/
+/k8s/
 /metafile.json
 /package-lock.json
 /pkg/
