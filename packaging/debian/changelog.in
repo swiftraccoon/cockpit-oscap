@@ -1,0 +1,5 @@
+cockpit-oscap (@VERSION@) unstable; urgency=medium
+
+  * Build of cockpit-oscap @VERSION@; see CHANGELOG.md for what changed.
+
+ -- Swift Raccoon <47705353+swiftraccoon@users.noreply.github.com>  @DATE@

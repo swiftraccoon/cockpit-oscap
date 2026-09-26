@@ -114,3 +114,40 @@ jobs:
 
       - name: List package contents
         run: rpm -qlp ./*.noarch.rpm
+
+  deb:
+    name: Debian package (Debian stable)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:stable
+    steps:
+      # git first, so the checkout is a real repository and `git describe` versions the build
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: >
+          apt-get install -y --no-install-recommends
+          make nodejs npm gettext xz-utils python3 jq
+          debhelper dpkg-dev fakeroot lintian
+
+      - name: Pacify git's permission check
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install npm dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Build the package
+        run: make deb
+
+      - name: List package contents
+        run: dpkg -c ./*.deb
+
+      - name: Lintian
+        run: lintian --fail-on error ./*.deb

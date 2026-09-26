@@ -25,7 +25,7 @@ test-bridge/          # pytest unit tests (synthetic datastream + ARF fixtures, 
 test/unit/            # Frontend helper unit tests (run with npm run test:unit)
 test/                 # Browser integration tests (check-oscap, run in a cockpit test VM)
 systemd/              # cockpit-oscap-scan.service + .timer for scheduled scans
-packaging/            # RPM spec template, Arch PKGBUILD
+packaging/            # RPM spec template, Arch PKGBUILD, Debian packaging (make deb)
 .github/workflows/    # ci.yml runs every check below on pull requests
 po/                   # i18n (gettext .po files)
 ```

@@ -32,4 +32,5 @@ A complete rewrite of the plugin as an end-to-end compliance workflow.
 - A Cockpit navigation status when the last scan failed or the score is poor.
 - Limited-access mode: everything readable, privileged actions explained.
 - Bridge unit tests, frontend helper unit tests, a browser integration test,
-  an accessibility audit, and CI that builds the tarball and the RPM.
+  an accessibility audit, and CI that builds the tarball, the RPM and the
+  Debian package (`make rpm`, `make deb`).

@@ -1,0 +1,18 @@
+Source: cockpit-oscap
+Section: admin
+Priority: optional
+Maintainer: Swift Raccoon <47705353+swiftraccoon@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), gettext, make, python3
+Standards-Version: 4.6.2
+Homepage: https://github.com/swiftraccoon/cockpit-oscap
+Rules-Requires-Root: no
+
+Package: cockpit-oscap
+Architecture: all
+Depends: cockpit-bridge, openscap-scanner, python3 (>= 3.9), ${misc:Depends}
+Recommends: ssg-base, ssg-debian | ssg-debderived
+Description: OpenSCAP compliance scanning for Cockpit
+ Evaluate the system against SCAP Security Guide profiles (CIS, STIG, PCI DSS,
+ ANSSI, ...), browse results rule by rule, customize profiles with tailoring,
+ apply guided remediation and schedule unattended scans, all from the Cockpit
+ web console.

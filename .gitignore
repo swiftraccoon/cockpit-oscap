@@ -7,6 +7,7 @@
 # general patterns
 __pycache__/
 *.pyc
+*.deb
 *.rpm
 .mypy_cache/
 .pytest_cache/
@@ -24,6 +25,7 @@ __pycache__/
 /cockpit-*.tar.xz
 /cockpit-navigator.spec
 /Containerfile
+/debbuild/
 /dist/
 /k8s/
 /metafile.json

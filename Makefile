@@ -92,7 +92,7 @@ watch: $(NODE_MODULES_TEST) $(COCKPIT_REPO_STAMP)
 	NODE_ENV=$(NODE_ENV) ./build.js --watch
 
 clean:
-	rm -rf dist/
+	rm -rf dist/ debbuild/
 	rm -f $(SPEC) packaging/arch/PKGBUILD
 	rm -f po/LINGUAS
 	rm -f metafile.json runtime-npm-modules.txt
@@ -175,6 +175,20 @@ rpm: $(TARFILE) $(NODE_CACHE) $(SPEC)
 	  $(SPEC)
 	find `pwd`/output -name '*.rpm' -printf '%f\n' -exec mv {} . \;
 	rm -rf "`pwd`/rpmbuild" "`pwd`/output" "`pwd`/build"
+
+# build a Debian package from the release tarball (needs debhelper and dpkg-dev)
+deb: $(TARFILE)
+	rm -rf debbuild
+	mkdir debbuild
+	tar -C debbuild -xf $(TARFILE)
+	cp -r packaging/debian debbuild/$(RPM_NAME)/debian
+	rm debbuild/$(RPM_NAME)/debian/changelog.in
+	commit_time=$$(git show --no-patch --format='%at' 2>/dev/null); \
+	sed -e 's/@VERSION@/$(VERSION)/' -e "s/@DATE@/$$(date -R -u $${commit_time:+-d @$$commit_time})/" \
+		packaging/debian/changelog.in > debbuild/$(RPM_NAME)/debian/changelog
+	cd debbuild/$(RPM_NAME) && dpkg-buildpackage --no-sign --build=binary
+	mv debbuild/*.deb .
+	rm -rf debbuild
 
 # build a VM with locally built distro pkgs installed
 # disable networking, VM images have mock/pbuilder with the common build dependencies pre-installed

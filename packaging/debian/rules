@@ -1,0 +1,25 @@
+#!/usr/bin/make -f
+# The release tarball ships a pre-built dist/ (see `make dist` and `make deb`),
+# so the package build needs neither node nor network access.
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	: # `make clean` would remove the pre-built dist/
+
+override_dh_auto_build:
+	: # dist/ is pre-built in the release tarball
+
+override_dh_auto_test:
+	: # `make check` runs the browser tests in a VM; the bridge tests run in CI
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/cockpit-oscap PREFIX=/usr \
+		SYSTEMD_UNIT_DIR=/usr/lib/systemd/system
+	# source maps are large and only for debugging
+	find $(CURDIR)/debian/cockpit-oscap/usr/share/cockpit -name '*.map' -delete
+
+override_dh_installsystemd:
+	# the Compliance page enables the timer once a schedule is configured
+	dh_installsystemd --no-enable --no-start
