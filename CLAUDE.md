@@ -68,8 +68,8 @@ make codecheck            # Static analysis via test/common/static-code
 Commands (argv[1]): `detect-backend`, `get-config`, `set-config`, `list-profiles`,
 `profile-rules`, `rule-info`, `scan`, `list-results`, `get-result`, `delete-result`,
 `generate-report`, `generate-fix`, `remediate`, `list-remediations`, `create-tailoring`,
-`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `tailor-rule`, `rule-history`, `manage-timer`,
-`validate-calendar`.
+`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `tailor-rule`, `rule-history`, `export-bundle`,
+`manage-timer`, `validate-calendar`.
 
 Every command prints one JSON document; errors are `{"error": "..."}` with exit
 status 1 (raised as `BridgeError` internally). `scan` and `remediate` stream
@@ -95,6 +95,9 @@ ids are shared across products). Remediation generates fixes from the ARF result
 a time; `has_fix` on rules means precisely that a Bash fix exists. Each run leaves the
 applied script plus a JSON audit record in `remediation/`, which `list-remediations`
 turns into the remediation history shown on a result.
+
+`export-bundle <id>` packs a scan's summary JSON, rule CSV, ARF, HTML report, embedded
+tailoring, remediation records and a README into a ZIP, returned base64-encoded.
 
 Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailoring/`,
 `remediation/`, `scan-state.json`).

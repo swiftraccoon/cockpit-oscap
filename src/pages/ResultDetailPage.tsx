@@ -67,7 +67,7 @@ import {
     severityLabel,
 } from "../helpers";
 import type { RemediationRun, ResultSummary, RuleExclusion, RuleResultItem, ScanResult } from "../types";
-import { downloadArf, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
+import { downloadArf, downloadBundle, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
 
@@ -531,6 +531,9 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                               onClick={() => guarded(() => downloadFix(result.id, "ansible"))}
                                                 >
                                                     {_("Download Ansible playbook")}
+                                                </DropdownItem>,
+                                                <DropdownItem key="bundle" onClick={() => guarded(() => downloadBundle(result.id))}>
+                                                    {_("Download evidence bundle (ZIP)")}
                                                 </DropdownItem>,
                                                 <DropdownItem key="delete" isDanger isDisabled={readOnly} onClick={remove}>
                                                     {_("Delete")}

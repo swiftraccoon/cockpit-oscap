@@ -20,7 +20,7 @@ import type { ListingTableRowProps } from "cockpit-components-table";
 import { useDialogs } from "dialogs";
 import * as timeformat from "timeformat";
 
-import { RESULTS_DIR, deleteResult, generateFix, generateReport, getResult, listResults, readFile } from "../api";
+import { deleteResult, exportBundle, generateFix, generateReport, getResult, listResults, readFile, RESULTS_DIR } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ActionsMenu } from "../components/ActionsMenu";
@@ -28,6 +28,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import {
+    decodeBase64,
     downloadFile,
     errorMessage,
     matchesSearch,
@@ -49,6 +50,12 @@ export async function downloadReport(id: string): Promise<void> {
 export async function downloadArf(id: string): Promise<void> {
     const xml = await readFile(`${RESULTS_DIR}/${id}.arf.xml`);
     downloadFile(`compliance-results-${safeFilename(id)}.arf.xml`, xml, "application/xml");
+}
+
+/** Download everything recorded about a scan as one ZIP, for auditors and tickets. */
+export async function downloadBundle(id: string): Promise<void> {
+    const bundle = await exportBundle(id);
+    downloadFile(bundle.filename, decodeBase64(bundle.content_base64), "application/zip");
 }
 
 /** Download every rule result of a scan as CSV. */
@@ -341,6 +348,11 @@ key="fix-ansible" isDisabled={!summary.has_arf || summary.counts.fail === 0}
                                                                   onClick={() => guarded(() => downloadFix(summary.id, "ansible"))}
                                                     >
                                                         {_("Download Ansible playbook")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="bundle" onClick={() => guarded(() => downloadBundle(summary.id))}
+                                                    >
+                                                        {_("Download evidence bundle (ZIP)")}
                                                     </DropdownItem>,
                                                     <DropdownItem
 key="delete" isDanger isDisabled={readOnly}

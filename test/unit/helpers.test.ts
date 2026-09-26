@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import {
     comparableScans,
     countHistory,
+    decodeBase64,
     describeHistory,
     emptyCounts,
     formatDuration,
@@ -116,6 +117,11 @@ describe("small helpers", () => {
         assert.deepEqual([...withMember(base, "b", true)], ["a", "b"]);
         assert.deepEqual([...withMember(base, "a", false)], []);
         assert.deepEqual([...base], ["a"]);  // untouched
+    });
+
+    it("decodes base64 into bytes", () => {
+        assert.deepEqual([...decodeBase64("UEsDBA==")], [0x50, 0x4b, 0x03, 0x04]);
+        assert.deepEqual([...decodeBase64("")], []);
     });
 
     it("counts and describes how a rule fared across scans", () => {

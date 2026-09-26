@@ -239,6 +239,13 @@ export interface ReportInfo {
     html: string;
 }
 
+/** A ZIP with everything recorded about a scan, base64-encoded for the trip through the bridge. */
+export interface BundleInfo {
+    id: string;
+    filename: string;
+    content_base64: string;
+}
+
 // ---------------------------------------------------------------------------
 // Streaming progress (scan / remediate) and the scan-state.json file
 // ---------------------------------------------------------------------------

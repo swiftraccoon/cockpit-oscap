@@ -249,9 +249,19 @@ export function resultsToCsv(result: { results: RuleResultItem[] }): string {
     return rows.map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
+/** The bytes of a base64 string (what the bridge sends binary content as). */
+export function decodeBase64(text: string): Uint8Array {
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++)
+        bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
+
 /** Offer `content` as a download named `filename`. */
-export function downloadFile(filename: string, content: string, type = "application/octet-stream"): void {
-    const blob = new Blob([content], { type });
+export function downloadFile(filename: string, content: string | Uint8Array, type = "application/octet-stream"): void {
+    // a copy gives the bytes a buffer of their own, which is what Blob wants
+    const blob = new Blob([typeof content === "string" ? content : new Uint8Array(content)], { type });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;

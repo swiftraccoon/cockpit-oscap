@@ -19,6 +19,7 @@ import * as python from "python";
 import bridgeScript from "./oscap-bridge.py";
 import type {
     BackendInfo,
+    BundleInfo,
     CalendarCheck,
     Config,
     ConfigPatch,
@@ -315,6 +316,9 @@ export const createTailoring = (baseProfileId: string, modifications: TailoringM
                        [baseProfileId, JSON.stringify(modifications), ...datastreamArgs(datastream)]);
 
 export const parseTailoring = (xml: string) => run<TailoringInfo>("parse-tailoring", ["-"], xml);
+
+/** Everything recorded about a scan (ARF, report, CSV, tailoring, remediation records) as a ZIP. */
+export const exportBundle = (id: string) => run<BundleInfo>("export-bundle", [id]);
 
 export const parseTailoringFile = (path: string) => run<TailoringInfo>("parse-tailoring", [path]);
 

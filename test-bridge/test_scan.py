@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import signal
 import subprocess
 import time
+import zipfile
 from typing import Any
 
 import pytest
@@ -163,6 +166,53 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
     _write_result(bridge, "2026-04-08T025532-base", exclusions=[{"rule_id": RULE_NEVER, "remark": "why"}, "junk", {}])
     loaded = bridge._load_result("2026-04-08T025532-base")
     assert loaded["exclusions"] == [{"rule_id": RULE_NEVER, "title": "", "remark": "why"}]
+
+
+def test_export_bundle_packs_everything_recorded_about_a_scan(run_bridge, bridge, tmp_path):
+    result_id = "2026-04-08T025531-base"
+    _write_result(bridge, result_id, base_profile_id=PROFILE_BASE, tailored=True, profile_title="Base Profile")
+    waived = (f'<xccdf:select idref="{RULE_TIMEOUT}" selected="false">'
+              "<xccdf:remark>waived</xccdf:remark></xccdf:select>")
+    arf_text = bridge.Path(_tailored_arf(tmp_path, waived)).read_text()
+    (bridge.RESULTS_DIR / f"{result_id}.arf.xml").write_text(arf_text)
+    bridge.REMEDIATION_DIR.mkdir()
+    script = bridge.REMEDIATION_DIR / f"2026-04-09T000000-{result_id}.sh"
+    script.write_text("#!/usr/bin/env bash\n# --- a ---\ntrue\n")
+    script.with_suffix(".json").write_text(json.dumps({"timestamp": "2026-04-09T00:00:00+00:00", "planned": 1,
+                                                        "success": True, "rules": []}))
+    (bridge.REMEDIATION_DIR / "2026-04-09T000000-2026-04-01T000000-other.sh").write_text("true\n")
+
+    info = run_bridge("export-bundle", result_id)
+    assert info["filename"] == f"compliance-evidence-{result_id}.zip"
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(info["content_base64"]))) as bundle:
+        names = bundle.namelist()
+        assert names[:3] == ["summary.json", "rules.csv", "results.arf.xml"]
+        assert "tailoring.xml" in names
+        assert f"remediation/{script.name}" in names
+        assert f"remediation/{script.with_suffix('.json').name}" in names
+        assert not any("other" in name for name in names)
+        assert names[-1] == "README.txt"
+        assert json.loads(bundle.read("summary.json"))["id"] == result_id
+        assert bundle.read("results.arf.xml").decode() == arf_text
+        assert "<xccdf:remark>waived</xccdf:remark>" in bundle.read("tailoring.xml").decode()
+        csv_lines = bundle.read("rules.csv").decode().split("\r\n")
+        assert csv_lines[0] == "rule_id,title,result,severity,category,message"
+        assert len(csv_lines) == 2 + 2  # header, two rules, trailing newline
+        readme = bundle.read("README.txt").decode()
+        assert "Base Profile" in readme
+        assert "Customized:  yes" in readme
+        assert "results.arf.xml: the scanner's Asset Reporting Format output" in readme
+        # the HTML report needs oscap and a real ARF; either it is there or the cover sheet says why not
+        assert ("report.html" in names) or ("report.html:" in readme)
+
+    # without the scanner's output the bundle still carries what is recorded, and says what is missing
+    (bridge.RESULTS_DIR / f"{result_id}.arf.xml").unlink()
+    again = run_bridge("export-bundle", result_id)
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(again["content_base64"]))) as bundle:
+        assert "results.arf.xml" not in bundle.namelist()
+        assert "no longer stored" in bundle.read("README.txt").decode()
+    assert "error" in run_bridge("export-bundle", expect_rc=1)
+    assert "error" in run_bridge("export-bundle", "2026-01-01T000000-nope", expect_rc=1)
 
 
 def test_rule_history_follows_one_rule_across_a_profiles_scans(run_bridge, bridge):

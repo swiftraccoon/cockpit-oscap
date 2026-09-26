@@ -14,7 +14,10 @@ The script must stay compatible with Python 3.9 (RHEL 9 / CentOS Stream 9).
 """
 from __future__ import annotations
 
+import base64
+import csv
 import fcntl
+import io
 import json
 import logging
 import os
@@ -28,6 +31,7 @@ import tempfile
 import time
 import traceback
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypedDict
@@ -2499,6 +2503,106 @@ def cmd_generate_report(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Evidence bundle
+# ---------------------------------------------------------------------------
+
+
+def _rules_csv(result: ScanResult) -> str:
+    """The rule results as CSV, the columns the page's download uses."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(["rule_id", "title", "result", "severity", "category", "message"])
+    for rule in result["results"]:
+        writer.writerow([rule["rule_id"], rule["title"], rule["result"], rule["severity"], rule["group"],
+                         rule["message"]])
+    return out.getvalue()
+
+
+def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> str:
+    """A plain-text cover sheet for whoever receives the bundle."""
+    os_info = detect_content()["os"]
+    lines = [
+        f"Compliance evidence for {os.uname().nodename}",
+        "=" * 72,
+        "",
+        f"Profile:     {result['profile_title'] or result['profile_id']} ({result['profile_id']})",
+        f"Scanned:     {result['timestamp']}",
+        f"Score:       {result['score']:.1f}% ({result['counts'].get('pass', 0)} passed, "
+        f"{result['counts'].get('fail', 0)} failed, {result['counts'].get('error', 0)} errors)",
+        f"Status:      {result['status']}",
+        f"Content:     {result['datastream'] or 'unknown'}"
+        + (f" (benchmark {result['benchmark_id']} {result['benchmark_version']})" if result["benchmark_id"] else ""),
+        f"System:      {os_info.get('pretty_name') or os_info.get('id') or 'unknown'}",
+        f"Customized:  {'yes' if result['tailored'] else 'no'}",
+        f"Generated:   {_iso(_now_utc())} by cockpit-oscap (bridge API {API_VERSION})",
+        "",
+        "Files",
+        "-----",
+    ]
+    descriptions = {
+        "summary.json": "the scan as the Compliance page records it, every rule result and the excluded rules",
+        "rules.csv": "one row per evaluated rule",
+        "results.arf.xml": "the scanner's Asset Reporting Format output, the primary evidence",
+        "report.html": "the scanner's HTML report of this ARF",
+        "tailoring.xml": "the customization the scan applied, with the justification of every change",
+    }
+    for member in members:
+        if member.startswith("remediation/"):
+            lines.append(f"{member}: a remediation run applied to this scan (script and record)")
+        else:
+            lines.append(f"{member}: {descriptions.get(member, '')}".rstrip(": "))
+    if notes:
+        lines += ["", "Notes", "-----", *notes]
+    return "\n".join(lines) + "\n"
+
+
+def export_bundle(result: ScanResult) -> tuple[str, bytes]:
+    """(file name, ZIP bytes): everything recorded about a scan, for auditors and tickets."""
+    members: list[str] = []
+    notes: list[str] = []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        def add(name: str, content: str | bytes) -> None:
+            bundle.writestr(name, content)
+            members.append(name)
+
+        add("summary.json", json.dumps(result, indent=1) + "\n")
+        add("rules.csv", _rules_csv(result))
+        if result["arf_path"] and Path(result["arf_path"]).is_file():
+            add("results.arf.xml", Path(result["arf_path"]).read_bytes())
+            try:
+                rc, html, stderr = run_cmd([_require_oscap(), "xccdf", "generate", "report", result["arf_path"]],
+                                           timeout=REPORT_TIMEOUT)
+                if rc == 0:
+                    add("report.html", html)
+                else:
+                    notes.append(f"report.html: oscap could not render the report ({stderr.strip()[-ERROR_TAIL:]})")
+            except BridgeError as exc:
+                notes.append(f"report.html: not rendered ({exc})")
+            embedded = extract_arf_tailoring(result["arf_path"])
+            if embedded:
+                add("tailoring.xml", Path(embedded).read_bytes())
+                Path(embedded).unlink(missing_ok=True)
+        else:
+            notes.append("results.arf.xml: the scanner's output of this scan is no longer stored")
+        for run in reversed(list_remediations(result["id"])):
+            script = Path(run["script_path"])
+            record = record_path_for(script)
+            for path in (script, record):
+                if path.is_file():
+                    add(f"remediation/{path.name}", path.read_bytes())
+        bundle.writestr("README.txt", _bundle_readme(result, members, notes))
+    return f"compliance-evidence-{result['id']}.zip", buffer.getvalue()
+
+
+def cmd_export_bundle(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("export-bundle requires a result id")
+    filename, content = export_bundle(_load_result(args[0]))
+    output_json({"id": args[0], "filename": filename, "content_base64": base64.b64encode(content).decode("ascii")})
+
+
+# ---------------------------------------------------------------------------
 # Scheduled scans (systemd timer)
 # ---------------------------------------------------------------------------
 
@@ -2695,6 +2799,7 @@ HANDLERS: dict[str, Callable[[list[str]], None]] = {
     "tailor-rule": cmd_tailor_rule,
     "list-remediations": cmd_list_remediations,
     "rule-history": cmd_rule_history,
+    "export-bundle": cmd_export_bundle,
     "manage-timer": cmd_manage_timer,
     "validate-calendar": cmd_validate_calendar,
 }
