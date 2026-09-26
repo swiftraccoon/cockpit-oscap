@@ -32,6 +32,7 @@ import type {
     ReportInfo,
     ResultSummary,
     RuleDetail,
+    RuleHistoryPoint,
     ScanProgress,
     ScanResult,
     TailoringInfo,
@@ -242,6 +243,10 @@ export const listProfiles = (datastream?: string) =>
 
 export const profileRules = (profileId: string, datastream?: string) =>
     run<ProfileRules>("profile-rules", [profileId, ...datastreamArgs(datastream)]);
+
+/** How a rule fared in the last scans of a profile, newest first. */
+export const ruleHistory = (ruleId: string, baseProfileId: string, limit = 20) =>
+    run<RuleHistoryPoint[]>("rule-history", [ruleId, baseProfileId, "--limit", String(limit)]);
 
 export const ruleInfo = (ruleId: string, datastream?: string) =>
     run<RuleDetail>("rule-info", [ruleId, ...datastreamArgs(datastream)]);

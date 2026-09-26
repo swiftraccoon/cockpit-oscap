@@ -197,6 +197,55 @@
   padding-inline: 0;
 }
 
+.oscap-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md);
+}
+
+.oscap-history-strip {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.oscap-history-dot {
+  display: inline-block;
+  inline-size: 0.875rem;
+  block-size: 0.875rem;
+  border-radius: var(--pf-t--global--border--radius--tiny);
+  background-color: var(--pf-t--global--color--nonstatus--gray--default);
+  border: 2px solid transparent;
+}
+
+.oscap-history-dot:hover,
+.oscap-history-dot:focus-visible {
+  outline: 2px solid var(--pf-t--global--border--color--clicked);
+  outline-offset: 1px;
+}
+
+.oscap-history-current {
+  border-color: var(--pf-t--global--text--color--regular);
+}
+
+.oscap-history-pass,
+.oscap-history-fixed {
+  background-color: var(--pf-t--global--color--status--success--default);
+}
+
+.oscap-history-fail {
+  background-color: var(--pf-t--global--color--status--danger--default);
+}
+
+.oscap-history-error {
+  background-color: var(--pf-t--global--color--status--warning--default);
+}
+
+.oscap-history-informational {
+  background-color: var(--pf-t--global--color--status--info--default);
+}
+
 .oscap-remark-removed {
   text-decoration: line-through;
 }

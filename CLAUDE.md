@@ -68,7 +68,8 @@ make codecheck            # Static analysis via test/common/static-code
 Commands (argv[1]): `detect-backend`, `get-config`, `set-config`, `list-profiles`,
 `profile-rules`, `rule-info`, `scan`, `list-results`, `get-result`, `delete-result`,
 `generate-report`, `generate-fix`, `remediate`, `list-remediations`, `create-tailoring`,
-`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `tailor-rule`, `manage-timer`, `validate-calendar`.
+`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `tailor-rule`, `rule-history`, `manage-timer`,
+`validate-calendar`.
 
 Every command prints one JSON document; errors are `{"error": "..."}` with exit
 status 1 (raised as `BridgeError` internally). `scan` and `remediate` stream
@@ -111,7 +112,8 @@ dialog available from every tab (the old `scan` route redirects to `overview`).
 (`notifications.page_status`) when the last scan failed or the latest score is poor;
 the manifest preloads the page so the navigation icon appears without visiting it.
 `RuleDetails` fetches a rule only while its row is expanded and caches per
-datastream. Kebab menus use `ActionsMenu` (a named toggle) rather than cockpit's
+datastream; on a result page it also loads the rule's history (`rule-history`, one
+linked square per scan of the profile). Kebab menus use `ActionsMenu` (a named toggle) rather than cockpit's
 `KebabDropdown`; inline alerts set `component="h2"` so heading order stays valid.
 
 ### Systemd Timer

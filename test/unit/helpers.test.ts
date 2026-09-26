@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 
 import {
     comparableScans,
+    countHistory,
     emptyCounts,
     formatDuration,
     formatScore,
@@ -113,6 +114,12 @@ describe("small helpers", () => {
         assert.deepEqual([...withMember(base, "b", true)], ["a", "b"]);
         assert.deepEqual([...withMember(base, "a", false)], []);
         assert.deepEqual([...base], ["a"]);  // untouched
+    });
+
+    it("counts how a rule fared across scans", () => {
+        const points = ["fail", "pass", "error", "fixed", "notselected", "notapplicable", "unknown"].map(result => ({ result }));
+        assert.deepEqual(countHistory(points), { failed: 2, passed: 2, other: 3 });
+        assert.deepEqual(countHistory([]), { failed: 0, passed: 0, other: 0 });
     });
 
     it("offers the complete earlier scans of a series for comparison, newest first", () => {

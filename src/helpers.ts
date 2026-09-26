@@ -174,6 +174,21 @@ export function formatDuration(seconds: number): string {
     return rest === 0 ? hoursText : cockpit.format("$0 $1", hoursText, cockpit.format(cockpit.ngettext("$0 minute", "$0 minutes", rest), rest));
 }
 
+/** How often a rule failed, passed or was otherwise reported across scans (for a history strip). */
+export function countHistory(points: { result: string }[]): { failed: number; passed: number; other: number } {
+    const counts = { failed: 0, passed: 0, other: 0 };
+    for (const point of points) {
+        const kind = normalizeResult(point.result);
+        if (kind === "fail" || kind === "error")
+            counts.failed += 1;
+        else if (kind === "pass" || kind === "fixed")
+            counts.passed += 1;
+        else
+            counts.other += 1;
+    }
+    return counts;
+}
+
 interface SeriesMember { base_profile_id: string; datastream: string }
 
 /** Scans of the same profile against the same content form a series; only those compare. */

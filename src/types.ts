@@ -171,6 +171,14 @@ export interface RuleResultItem {
     message: string;
 }
 
+/** One scan of a profile and how a rule fared in it ("notselected" when the scan skipped it). */
+export interface RuleHistoryPoint {
+    id: string;
+    timestamp: string;
+    score: number;
+    result: string;
+}
+
 /** A rule the customization disabled for a scan, with the justification recorded with it. */
 export interface RuleExclusion {
     rule_id: string;

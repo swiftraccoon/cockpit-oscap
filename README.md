@@ -46,10 +46,11 @@ scheduled scans.
   remaining-time estimate; scans started by the scheduler show the same
   progress banner. Results are stored as ARF plus a JSON summary and pruned
   to a configurable number.
-- **Results** – sortable history filterable by profile, per-rule results with on-demand details and
-  scanner messages, filters by result, severity and category, and a comparison
-  with the previous scan of the same profile (new failures, rules now passing)
-  or with any earlier one you pick.
+- **Results** – sortable history filterable by profile, per-rule results with on-demand details,
+  scanner messages and the rule's history across the profile's recent scans,
+  filters by result, severity and category, and a comparison with the previous
+  scan of the same profile (new failures, rules now passing) or with any
+  earlier one you pick.
   Every scan offers its HTML report, ARF results, a CSV of its rule results,
   and the remediation for its failed rules as a Bash script or an Ansible
   playbook. A failed rule that does not apply can be excluded from the profile

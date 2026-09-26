@@ -165,6 +165,36 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
     assert loaded["exclusions"] == [{"rule_id": RULE_NEVER, "title": "", "remark": "why"}]
 
 
+def test_rule_history_follows_one_rule_across_a_profiles_scans(run_bridge, bridge):
+    # newest first; a scan that skipped the rule reports notselected; other profiles and interrupted
+    # scans are left out
+    def write(day: str, **overrides: Any) -> None:
+        suffix = "other" if "base_profile_id" in overrides else "base"
+        overrides.setdefault("base_profile_id", PROFILE_BASE)
+        _write_result(bridge, f"2026-04-{day}T000000-{suffix}", timestamp=f"2026-04-{day}T00:00:00+00:00",
+                      **overrides)
+
+    write("01")
+    write("02", results=[{"rule_id": RULE_AUDIT, "result": "pass", "title": "A", "severity": "medium"}],
+          score=100.0)
+    write("03", status="interrupted")
+    write("04", base_profile_id="xccdf_org.test.content_profile_extended")
+    write("05")
+    history = run_bridge("rule-history", RULE_ROOT_LOGIN, PROFILE_BASE)
+    assert [(h["id"][:10], h["result"], h["score"]) for h in history] == [
+        ("2026-04-05", "fail", 50.0), ("2026-04-02", "notselected", 100.0), ("2026-04-01", "fail", 50.0)]
+    assert history[0]["timestamp"] == "2026-04-05T00:00:00+00:00"
+    limited = run_bridge("rule-history", RULE_ROOT_LOGIN, PROFILE_BASE, "--limit", "2")
+    assert [h["id"][:10] for h in limited] == ["2026-04-05", "2026-04-02"]
+    assert run_bridge("rule-history", RULE_ROOT_LOGIN, "xccdf_org.test.content_profile_nope") == []
+    assert "error" in run_bridge("rule-history", RULE_ROOT_LOGIN, expect_rc=1)
+    assert "error" in run_bridge("rule-history", "bad id", PROFILE_BASE, expect_rc=1)
+    zero_limit = run_bridge("rule-history", RULE_ROOT_LOGIN, PROFILE_BASE, "--limit", "0", expect_rc=1)
+    assert "--limit" in zero_limit["error"]
+    bad_limit = run_bridge("rule-history", RULE_ROOT_LOGIN, PROFILE_BASE, "--limit", "x", expect_rc=1)
+    assert "--limit" in bad_limit["error"]
+
+
 def test_get_result_reports_what_the_customization_excludes_today(run_bridge, bridge, datastream, tmp_path):
     _write_result(bridge, "2026-04-08T025531-base", base_profile_id=PROFILE_BASE)
     assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == []

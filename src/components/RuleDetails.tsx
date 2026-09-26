@@ -18,12 +18,15 @@ import {
 import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
 import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
+import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
 import cockpit from "cockpit";
 
-import { ruleInfo } from "../api";
+import * as timeformat from "timeformat";
+
+import { ruleHistory, ruleInfo } from "../api";
 import { useAsync } from "../app-hooks";
-import { referenceSource } from "../helpers";
-import type { Reference, RuleDetail } from "../types";
+import { countHistory, normalizeResult, parseTimestamp, referenceSource, resultLabel } from "../helpers";
+import type { Reference, RuleDetail, RuleHistoryPoint } from "../types";
 
 const _ = cockpit.gettext;
 
@@ -97,7 +100,42 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate, onExclude, excluded = false }: {
+/** How the rule fared in the profile's recent scans: one square per scan, oldest first, each a link. */
+const RuleHistory = ({ ruleId, points, currentId }: { ruleId: string; points: RuleHistoryPoint[]; currentId: string }) => {
+    const counts = countHistory(points);
+    const ordered = [...points].reverse();
+    return (
+        <div className="oscap-history">
+            <span className="oscap-history-strip" role="list" aria-label={_("Result per scan, oldest first")}>
+                {ordered.map(point => {
+                    const at = parseTimestamp(point.timestamp);
+                    const label = cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : point.timestamp, resultLabel(point.result));
+                    const kind = normalizeResult(point.result);
+                    return (
+                        <Tooltip key={point.id} content={label}>
+                            <a
+                                role="listitem"
+                                href={cockpit.location.encode(["results", point.id], { rule: ruleId })}
+                                aria-label={label}
+                                aria-current={point.id === currentId ? "true" : undefined}
+                                className={`oscap-history-dot oscap-history-${kind}${point.id === currentId ? " oscap-history-current" : ""}`}
+                            />
+                        </Tooltip>
+                    );
+                })}
+            </span>
+            <span className="oscap-muted">
+                {cockpit.format(_("Last $0 scans: $1 failed, $2 passed"),
+                                points.length, counts.failed, counts.passed)}
+                {counts.other > 0 && cockpit.format(_(", $0 other"), counts.other)}
+            </span>
+        </div>
+    );
+};
+
+export const RuleDetails = ({
+    ruleId, datastream, message, description, onRemediate, onExclude, excluded = false, history,
+}: {
     ruleId: string;
     /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
     datastream?: string | undefined;
@@ -111,9 +149,14 @@ export const RuleDetails = ({ ruleId, datastream, message, description, onRemedi
     onExclude?: () => void;
     /** The profile's customization already disables the rule (later scans skip it). */
     excluded?: boolean;
+    /** Show how the rule fared in the profile's recent scans (on a result page). */
+    history?: { baseProfileId: string; currentId: string };
 }) => {
     // Callers mount this only for expanded rows, so the fetch happens on first expansion.
     const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
+    const past = useAsync(
+        () => (history ? ruleHistory(ruleId, history.baseProfileId) : Promise.resolve(null)),
+        [ruleId, history?.baseProfileId]);
 
     return (
         <div className="oscap-expanded-details">
@@ -184,6 +227,14 @@ id={`remediate-${ruleId}`} variant="secondary" size="sm"
                                     </Button>
                                 )}
                             </span>
+                        </DescriptionListDescription>
+                    </DescriptionListGroup>
+                )}
+                {history && past.data && past.data.length > 1 && (
+                    <DescriptionListGroup>
+                        <DescriptionListTerm>{_("History")}</DescriptionListTerm>
+                        <DescriptionListDescription>
+                            <RuleHistory ruleId={ruleId} points={past.data} currentId={history.currentId} />
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}

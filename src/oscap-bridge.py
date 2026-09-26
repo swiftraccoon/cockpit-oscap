@@ -289,6 +289,15 @@ class RuleResultItem(TypedDict):
     message: str
 
 
+class RuleHistoryPoint(TypedDict):
+    """One scan of a profile and how a rule fared in it."""
+
+    id: str
+    timestamp: str
+    score: float
+    result: str  # "notselected" when the scan skipped the rule
+
+
 class RuleExclusion(TypedDict):
     """A rule the customization disabled for this scan, with the justification recorded with it."""
 
@@ -515,7 +524,7 @@ def _parse_json_arg(text: str, what: str) -> object:
 
 
 _VALUE_OPTIONS = frozenset((
-    "--datastream", "--tailoring-path", "--rules", "--source", "--type", "--rescan-of", "--remark"))
+    "--datastream", "--tailoring-path", "--rules", "--source", "--type", "--rescan-of", "--remark", "--limit"))
 
 
 def _opt(args: list[str], name: str) -> str | None:
@@ -1710,6 +1719,46 @@ def _resolved_exclusions(config: Config, base_profile_id: str) -> list[str]:
     return sorted(_customization_exclusions(_BenchmarkIndex(benchmark), profile))
 
 
+DEFAULT_HISTORY_LIMIT = 20
+MAX_HISTORY_LIMIT = 200
+
+
+def rule_history(rule_id: str, base_profile_id: str, limit: int) -> list[RuleHistoryPoint]:
+    """How a rule fared in the last ``limit`` complete scans of a profile, newest first."""
+    points: list[RuleHistoryPoint] = []
+    for summary in list_results():
+        if summary["base_profile_id"] != base_profile_id or summary["status"] != "complete":
+            continue
+        try:
+            result = _load_result(summary["id"])
+        except BridgeError:
+            continue
+        outcome = next((r["result"] for r in result["results"] if r["rule_id"] == rule_id), RESULT_NOTSELECTED)
+        points.append(RuleHistoryPoint(id=result["id"], timestamp=result["timestamp"], score=result["score"],
+                                       result=outcome))
+        if len(points) >= limit:
+            break
+    return points
+
+
+def cmd_rule_history(args: list[str]) -> None:
+    """rule-history <rule id> <base profile id> [--limit N]"""
+    positional = _positional(args)
+    if len(positional) < REQUIRED_PAIR:
+        raise BridgeError("rule-history requires a rule id and a base profile id")
+    rule_id, base_profile_id = positional[:REQUIRED_PAIR]
+    if not XCCDF_ID_RE.match(rule_id) or not XCCDF_ID_RE.match(base_profile_id):
+        raise BridgeError("invalid rule or profile id")
+    raw_limit = _opt(args, "--limit")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else DEFAULT_HISTORY_LIMIT
+    except ValueError as exc:
+        raise BridgeError(f"invalid --limit: {raw_limit!r}") from exc
+    if not 1 <= limit <= MAX_HISTORY_LIMIT:
+        raise BridgeError(f"--limit must be between 1 and {MAX_HISTORY_LIMIT}")
+    output_json(rule_history(rule_id, base_profile_id, limit))
+
+
 def cmd_get_result(args: list[str]) -> None:
     if not args:
         raise BridgeError("get-result requires a result id")
@@ -2634,6 +2683,7 @@ HANDLERS: dict[str, Callable[[list[str]], None]] = {
     "delete-tailoring": cmd_delete_tailoring,
     "tailor-rule": cmd_tailor_rule,
     "list-remediations": cmd_list_remediations,
+    "rule-history": cmd_rule_history,
     "manage-timer": cmd_manage_timer,
     "validate-calendar": cmd_validate_calendar,
 }
