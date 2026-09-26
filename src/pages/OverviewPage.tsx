@@ -118,14 +118,16 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
         );
     }
 
-    const previous = results.find(r => r.id !== latest.id && r.profile_id === latest.profile_id);
+    const previous = results.find(r => r.id !== latest.id && r.status === "complete" &&
+        r.base_profile_id === latest.base_profile_id && r.datastream === latest.datastream);
     const scannedAt = parseTimestamp(latest.timestamp);
     const failed: RuleResultItem[] = latest.results
             .filter(r => r.result === "fail" || r.result === "error")
             .sort((a, b) => (a.result === b.result ? compareSeverity(a.severity, b.severity) : a.result === "fail" ? -1 : 1));
     const recent = results.slice(0, RECENT_SCANS);
     const trend: TrendPoint[] = results
-            .filter(r => r.profile_id === latest.profile_id && r.status === "complete")
+            .filter(r => r.base_profile_id === latest.base_profile_id && r.datastream === latest.datastream &&
+                r.status === "complete")
             .slice(0, TREND_POINTS)
             .reverse()
             .map(r => ({ id: r.id, timestamp: r.timestamp, score: r.score }));

@@ -25,6 +25,7 @@ import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
 import { errorMessage, ruleShortName } from "../helpers";
 import type { ProfileInfo, ScanProgress, ScanResult } from "../types";
+import { ScanEta } from "./ScanEta";
 import { CountLabels, ScoreValue } from "./labels";
 import { ErrorAlert, Loading } from "./states";
 
@@ -162,6 +163,11 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
                 {progress?.rule_id && (
                     <StackItem>
                         <Content component="small" className="oscap-mono">{ruleShortName(progress.rule_id)}</Content>
+                    </StackItem>
+                )}
+                {progress && (
+                    <StackItem>
+                        <ScanEta started={progress.started} progress={progress.progress} />
                     </StackItem>
                 )}
                 <StackItem>

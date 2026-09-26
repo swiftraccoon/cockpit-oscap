@@ -19,14 +19,14 @@ import type { ListingTableRowProps } from "cockpit-components-table";
 import { useDialogs } from "dialogs";
 import * as timeformat from "timeformat";
 
-import { RESULTS_DIR, deleteResult, generateFix, generateReport, listResults, readFile } from "../api";
+import { RESULTS_DIR, deleteResult, generateFix, generateReport, getResult, listResults, readFile } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
-import { downloadFile, errorMessage, matchesSearch, parseTimestamp, safeFilename } from "../helpers";
+import { downloadFile, errorMessage, matchesSearch, parseTimestamp, resultsToCsv, safeFilename } from "../helpers";
 import type { FixType, ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
@@ -39,6 +39,12 @@ export async function downloadReport(id: string): Promise<void> {
 export async function downloadArf(id: string): Promise<void> {
     const xml = await readFile(`${RESULTS_DIR}/${id}.arf.xml`);
     downloadFile(`compliance-results-${safeFilename(id)}.arf.xml`, xml, "application/xml");
+}
+
+/** Download every rule result of a scan as CSV. */
+export async function downloadCsv(id: string): Promise<void> {
+    const result = await getResult(id);
+    downloadFile(`compliance-rules-${safeFilename(id)}.csv`, resultsToCsv(result), "text/csv");
 }
 
 /** Download the remediation for the failed rules of a scan as a Bash script or an Ansible playbook. */
@@ -220,6 +226,9 @@ key="arf" isDisabled={!summary.has_arf}
                                                                   onClick={() => guarded(() => downloadArf(summary.id))}
                                                     >
                                                         {_("Download ARF results")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem key="csv" onClick={() => guarded(() => downloadCsv(summary.id))}>
+                                                        {_("Download rule results (CSV)")}
                                                     </DropdownItem>,
                                                     <DropdownItem
 key="fix-bash" isDisabled={!summary.has_arf || summary.counts.fail === 0}

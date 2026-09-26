@@ -4,7 +4,7 @@
 
 import cockpit from "cockpit";
 
-import type { ResultCounts, RuleResultStatus, Severity } from "./types";
+import type { ResultCounts, RuleResultItem, RuleResultStatus, Severity } from "./types";
 
 const _ = cockpit.gettext;
 
@@ -132,6 +132,19 @@ export function scoredTotal(counts: ResultCounts): number {
 }
 
 /** Offer `content` as a download named `filename`. */
+function csvCell(value: string | number): string {
+    const text = String(value);
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** Every rule result of a scan as CSV (RFC 4180), for spreadsheets and audit evidence. */
+export function resultsToCsv(result: { results: RuleResultItem[] }): string {
+    const rows = [["rule_id", "title", "result", "severity", "category", "message"]];
+    for (const rule of result.results)
+        rows.push([rule.rule_id, rule.title, rule.result, rule.severity, rule.group, rule.message]);
+    return rows.map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
 export function downloadFile(filename: string, content: string, type = "application/octet-stream"): void {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);

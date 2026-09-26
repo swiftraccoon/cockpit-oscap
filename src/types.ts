@@ -199,6 +199,7 @@ export interface ResultSummary {
     timestamp: string;
     profile_id: string;
     base_profile_id: string;
+    datastream: string;
     profile_title: string;
     score: number;
     counts: ResultCounts;

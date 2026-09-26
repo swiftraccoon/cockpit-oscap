@@ -58,7 +58,7 @@ import {
     severityLabel,
 } from "../helpers";
 import type { ResultSummary, RuleResultItem, ScanResult } from "../types";
-import { downloadArf, downloadFix, downloadReport } from "./ResultsPage";
+import { downloadArf, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
 
@@ -82,11 +82,16 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
     }
 }
 
+/** Scans of the same base profile against the same content form one series, customized or not. */
+function sameSeries(a: { base_profile_id: string; datastream: string }, b: { base_profile_id: string; datastream: string }) {
+    return a.base_profile_id === b.base_profile_id && a.datastream === b.datastream;
+}
+
 /** The most recent completed scan of the same profile that ran before `result`, if any. */
 async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Promise<ScanResult | null> {
     const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
     // newest first, so the first older match is the immediately preceding scan
-    const before = summaries.find(s => s.id !== result.id && s.profile_id === result.profile_id &&
+    const before = summaries.find(s => s.id !== result.id && sameSeries(s, result) &&
         s.status === "complete" && (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at);
     if (!before)
         return null;
@@ -346,6 +351,9 @@ key="arf" isDisabled={!result.arf_path}
                                                 >
                                                     {_("Download ARF results")}
                                                 </DropdownItem>,
+                                                <DropdownItem key="csv" onClick={() => guarded(() => downloadCsv(result.id))}>
+                                                    {_("Download rule results (CSV)")}
+                                                </DropdownItem>,
                                                 <DropdownItem
 key="fix-bash" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                               onClick={() => guarded(() => downloadFix(result.id, "bash"))}
@@ -476,6 +484,7 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                     expandedContent: (
                                         <RuleDetails
                                             ruleId={rule.rule_id} message={rule.message}
+                                            datastream={loaded.datastream || undefined}
                                             active={Boolean(expandedRules[rule.rule_id])}
                                             {...canRemediate && normalizeResult(rule.result) === "fail" &&
                                                 { onRemediate: () => remediateRules([rule.rule_id]) }}

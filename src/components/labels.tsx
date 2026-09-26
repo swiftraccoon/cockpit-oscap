@@ -102,6 +102,13 @@ function riskText(level: string): string {
     }
 }
 
+const SEVERITY_COUNT_FORMATS: Record<Severity, string> = {
+    high: _("$0 high"),
+    medium: _("$0 medium"),
+    low: _("$0 low"),
+    unknown: _("$0 unknown"),
+};
+
 /** How many of the given rules fall in each severity, highest first (empty severities are omitted). */
 export const SeverityCounts = ({ rules }: { rules: { severity: string }[] }) => {
     const counts = new Map<Severity, number>();
@@ -113,7 +120,7 @@ export const SeverityCounts = ({ rules }: { rules: { severity: string }[] }) => 
         <span className="oscap-inline-list">
             {SEVERITIES.filter(severity => counts.has(severity)).map(severity => (
                 <Label key={severity} color={SEVERITY_COLORS[severity]} variant="outline" isCompact>
-                    {cockpit.format("$0 $1", counts.get(severity), severityLabel(severity))}
+                    {cockpit.format(SEVERITY_COUNT_FORMATS[severity], counts.get(severity))}
                 </Label>
             ))}
         </span>

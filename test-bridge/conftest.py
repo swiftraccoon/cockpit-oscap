@@ -105,6 +105,7 @@ SYNTHETIC_DATASTREAM = textwrap.dedent(f"""\
           <xccdf:Rule id="{RULE_ROOT_LOGIN}" severity="high" selected="false">
             <xccdf:title>Disable SSH root login</xccdf:title>
             <xccdf:description>No root over SSH.</xccdf:description>
+            <xccdf:fix system="urn:xccdf:fix:script:ansible">- name: no root login</xccdf:fix>
             <xccdf:check system="http://oval.mitre.org/XMLSchema/oval-definitions-5">
               <xccdf:check-export export-name="oval:test:var:1" value-id="{VALUE_TIMEOUT}"/>
               <xccdf:check-content-ref href="test-oval.xml" name="oval:test:def:2"/>
