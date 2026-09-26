@@ -200,7 +200,10 @@ export interface ScanResult {
     counts: ResultCounts;
     results: RuleResultItem[];
     exclusions: RuleExclusion[];
-    /** Rules (or groups) the profile's customization disables today; only get-result fills it. */
+    /**
+     * Rules the profile's customization takes out of a scan today (only get-result fills it; a
+     * customization scans cannot apply contributes what its file unselects, rules or groups).
+     */
     currently_excluded: string[];
     arf_path: string;
     json_path: string;

@@ -37,7 +37,9 @@ VALUE_TIMEOUT = "xccdf_org.test.content_value_timeout"
 VALUE_UNUSED = "xccdf_org.test.content_value_unused"
 
 # A tiny but structurally faithful SCAP source datastream: profiles (one
-# extending another, one abstract), nested groups, values with selectors,
+# extending another, one abstract), nested groups (the SSH group is off by itself and switched on
+# by the base profile, its rules are on by themselves: a group select does not reach rules that
+# are off, as the scanner resolves it), values with selectors,
 # rules with check exports and a fix, followed by a (dummy) OVAL component.
 SYNTHETIC_DATASTREAM = textwrap.dedent(f"""\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -100,9 +102,9 @@ SYNTHETIC_DATASTREAM = textwrap.dedent(f"""\
       </xccdf:Group>
       <xccdf:Group id="xccdf_org.test.content_group_services">
         <xccdf:title>Services</xccdf:title>
-        <xccdf:Group id="xccdf_org.test.content_group_ssh">
+        <xccdf:Group id="xccdf_org.test.content_group_ssh" selected="false">
           <xccdf:title>SSH Server</xccdf:title>
-          <xccdf:Rule id="{RULE_ROOT_LOGIN}" severity="high" selected="false">
+          <xccdf:Rule id="{RULE_ROOT_LOGIN}" severity="high">
             <xccdf:title>Disable SSH root login</xccdf:title>
             <xccdf:description>No root over SSH.</xccdf:description>
             <xccdf:fix system="urn:xccdf:fix:script:ansible">- name: no root login</xccdf:fix>
@@ -111,7 +113,7 @@ SYNTHETIC_DATASTREAM = textwrap.dedent(f"""\
               <xccdf:check-content-ref href="test-oval.xml" name="oval:test:def:2"/>
             </xccdf:check>
           </xccdf:Rule>
-          <xccdf:Rule id="{RULE_TIMEOUT}" severity="medium" selected="false">
+          <xccdf:Rule id="{RULE_TIMEOUT}" severity="medium">
             <xccdf:title>Set SSH idle timeout</xccdf:title>
             <xccdf:check system="http://oval.mitre.org/XMLSchema/oval-definitions-5">
               <xccdf:check-export export-name="oval:test:var:2" value-id="{VALUE_TIMEOUT}"/>

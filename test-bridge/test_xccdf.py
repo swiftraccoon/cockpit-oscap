@@ -44,7 +44,7 @@ def test_list_profiles_hides_abstract_and_counts_rules(bridge, datastream):
     profiles = bridge.list_profiles(datastream, {})
     by_id = {p["id"]: p for p in profiles}
     assert set(by_id) == {PROFILE_BASE, PROFILE_EXTENDED}
-    assert by_id[PROFILE_BASE]["rule_count"] == BASE_RULE_COUNT  # audit + whole ssh group
+    assert by_id[PROFILE_BASE]["rule_count"] == BASE_RULE_COUNT  # audit + the ssh group's rules
     assert by_id[PROFILE_EXTENDED]["rule_count"] == EXTENDED_RULE_COUNT  # root login unselected
     assert by_id[PROFILE_EXTENDED]["extends"] == PROFILE_BASE
     assert by_id[PROFILE_BASE]["description"] == "First paragraph.\n\nSecond paragraph."
@@ -62,6 +62,34 @@ def test_list_profiles_reports_tailoring(bridge, datastream):
     assert by_id[PROFILE_BASE]["tailoring_path"] == str(path)
     assert by_id[PROFILE_BASE]["tailored_profile_id"] == profile_id
     assert by_id[PROFILE_EXTENDED]["tailoring_path"] is None
+
+
+def test_selection_is_resolved_as_the_scanner_does(bridge, datastream):
+    """Checked against oscap on a bare benchmark: a group switched on does not reach a rule that is
+    off by itself, a rule switched on inside a group that is off stays skipped, the last select for
+    an item wins, and a profile's ancestors apply first."""
+    index = bridge._BenchmarkIndex(bridge.load_benchmark(datastream))
+    sel = index.selection(PROFILE_BASE)
+    assert (sel[RULE_AUDIT], sel[RULE_ROOT_LOGIN], sel[RULE_TIMEOUT], sel[RULE_NEVER]) == (True, True, True, False)
+    extended = index.selection(PROFILE_EXTENDED)
+    assert (extended[RULE_ROOT_LOGIN], extended[RULE_TIMEOUT]) == (False, True)
+
+    def select(idref: str, on: bool) -> ET.Element:  # noqa: FBT001
+        return ET.Element(bridge.TAG_SELECT, {"idref": idref, "selected": str(on).lower()})
+
+    # switching the never-selected rule's group on does not reach it; switching the rule on does
+    group_on = index.selection(PROFILE_BASE, [select("xccdf_org.test.content_group_auditing", True)])
+    assert group_on[RULE_NEVER] is False
+    assert index.selection(PROFILE_BASE, [select(RULE_NEVER, True)])[RULE_NEVER] is True
+    # a rule switched on inside a group that is off stays skipped; the last select wins
+    ssh_off = index.selection(PROFILE_BASE,
+                              [select("xccdf_org.test.content_group_ssh", False), select(RULE_TIMEOUT, True)])
+    assert (ssh_off[RULE_ROOT_LOGIN], ssh_off[RULE_TIMEOUT]) == (False, False)
+    flip = index.selection(PROFILE_BASE, [select(RULE_AUDIT, False), select(RULE_AUDIT, True)])
+    assert flip[RULE_AUDIT] is True
+    # an unknown profile falls back to the content's own attributes
+    assert index.selection("xccdf_org.test.content_profile_nope") == {
+        RULE_AUDIT: False, RULE_NEVER: False, RULE_ROOT_LOGIN: False, RULE_TIMEOUT: False}
 
 
 def test_profile_rules_selection_groups_and_values(bridge, datastream):

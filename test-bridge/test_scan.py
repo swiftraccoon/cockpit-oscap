@@ -191,8 +191,14 @@ def test_get_result_reports_what_the_customization_excludes_today(run_bridge, br
     assert RULE_TIMEOUT in excluded
     assert RULE_ROOT_LOGIN in excluded  # its group is off, whatever its own select says
     assert RULE_NEVER not in excluded
-    # a customization scans do not apply excludes nothing, and an unreadable one is no error
-    bridge.Path(run_bridge("get-config")["tailorings"][PROFILE_BASE]).write_bytes(b"\xff\xfe<nope/>")
+    # a customization scans cannot apply still names what its file unselects (the action must not be
+    # offered for those), and an unreadable one is no error
+    registered = bridge.Path(run_bridge("get-config")["tailorings"][PROFILE_BASE])
+    registered.write_text(registered.read_text().replace(f'extends="{PROFILE_BASE}"',
+                                                         'extends="xccdf_org.test.content_profile_gone"'))
+    assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == sorted(
+        ["xccdf_org.test.content_group_ssh", RULE_ROOT_LOGIN, RULE_NEVER])
+    registered.write_bytes(b"\xff\xfe<nope/>")
     assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == []
     # only get-result computes it: a result the scanner writes does not carry it
     plain = tmp_path / "plain.arf.xml"

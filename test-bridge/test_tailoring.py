@@ -207,6 +207,20 @@ def test_tailor_rule_places_the_select_where_the_schema_allows(run_bridge, bridg
     profile = ET.fromstring(bridge.Path(info["path"]).read_text()).find(f"{{{NS}}}Profile")  # noqa: S314
     assert profile is not None
     assert [c.tag.split("}")[1] for c in profile] == ["title", "select", "metadata"]
+    # nothing to go before: the select comes last; a signature stays last
+    plain = xml.replace("<xccdf:metadata><note>kept last</note></xccdf:metadata>", "")
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=plain)
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable")
+    profile = ET.fromstring(bridge.Path(info["path"]).read_text()).find(f"{{{NS}}}Profile")  # noqa: S314
+    assert profile is not None
+    assert [c.tag.split("}")[1] for c in profile] == ["title", "select"]
+    signed = xml.replace("<xccdf:metadata><note>kept last</note></xccdf:metadata>",
+                         '<dsig:Signature xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"/>')
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=signed)
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable")
+    profile = ET.fromstring(bridge.Path(info["path"]).read_text()).find(f"{{{NS}}}Profile")  # noqa: S314
+    assert profile is not None
+    assert [c.tag.split("}")[1] for c in profile] == ["title", "select", "Signature"]
 
 
 def test_parse_round_trip(bridge, datastream):

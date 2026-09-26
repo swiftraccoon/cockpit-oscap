@@ -853,21 +853,25 @@ class _BenchmarkIndex:
     def __init__(self, benchmark: ET.Element) -> None:
         self.benchmark = benchmark
         self.rules: dict[str, ET.Element] = {}
+        self.groups: dict[str, ET.Element] = {}
         self.values: dict[str, ET.Element] = {}
         self.group_path: dict[str, list[str]] = {}
         self.group_rules: dict[str, list[str]] = {}
+        self.rule_groups: dict[str, list[str]] = {}  # the groups above a rule, outermost first
         self._walk(benchmark, [], [])
 
     def _walk(self, node: ET.Element, path: list[str], group_ids: list[str]) -> None:
         for child in node:
             if child.tag == TAG_GROUP:
                 gid = child.get("id", "")
+                self.groups[gid] = child
                 self.group_rules.setdefault(gid, [])
                 self._walk(child, [*path, _text(child.find(TAG_TITLE))], [*group_ids, gid])
             elif child.tag == TAG_RULE:
                 rid = child.get("id", "")
                 self.rules[rid] = child
                 self.group_path[rid] = path
+                self.rule_groups[rid] = group_ids
                 for gid in group_ids:
                     self.group_rules[gid].append(rid)
             elif child.tag == TAG_VALUE:
@@ -879,28 +883,38 @@ class _BenchmarkIndex:
             return path[GROUP_CATEGORY_DEPTH - 1]
         return path[0] if path else ""
 
-    def selection(self, profile_id: str, *, _seen: set[str] | None = None) -> dict[str, bool]:
-        """Resolve which rules a profile selects, honouring ``extends`` and group selects."""
-        seen = _seen or set()
-        profile = _find_profile(self.benchmark, profile_id)
-        if profile is None or profile_id in seen:
-            return {rid: _xml_true(rule.get("selected")) for rid, rule in self.rules.items()}
-        seen.add(profile_id)
-        parent = profile.get("extends")
-        selected = (self.selection(parent, _seen=seen) if parent
-                    else {rid: _xml_true(rule.get("selected")) for rid, rule in self.rules.items()})
-        self.apply_selects(selected, profile.findall(TAG_SELECT))
-        return selected
+    def profile_chain(self, profile_id: str) -> list[ET.Element]:
+        """A profile and the profiles it extends, outermost ancestor first."""
+        chain: list[ET.Element] = []
+        seen: set[str] = set()
+        current: str | None = profile_id
+        while current and current not in seen:
+            seen.add(current)
+            profile = _find_profile(self.benchmark, current)
+            if profile is None:
+                break
+            chain.append(profile)
+            current = profile.get("extends")
+        chain.reverse()
+        return chain
 
-    def apply_selects(self, selected: dict[str, bool], selects: Iterable[ET.Element]) -> None:
-        for sel in selects:
+    def selection(self, profile_id: str, extra_selects: Iterable[ET.Element] = ()) -> dict[str, bool]:
+        """Rule id -> whether a scan of the profile evaluates it, decided as the scanner does.
+
+        Every rule and group starts from its own ``selected`` attribute; the selects of the profile
+        chain (ancestors first) and then ``extra_selects`` (a tailoring's) override the item they
+        name, the last one winning. A rule is evaluated only when it and every group above it are
+        selected: switching a group on does not reach a rule that is off by itself, and a rule
+        switched on inside a group that is off stays skipped.
+        """
+        state = {rid: _xml_true(rule.get("selected")) for rid, rule in self.rules.items()}
+        state.update({gid: _xml_true(group.get("selected")) for gid, group in self.groups.items()})
+        selects = [sel for profile in self.profile_chain(profile_id) for sel in profile.findall(TAG_SELECT)]
+        for sel in [*selects, *extra_selects]:
             idref = sel.get("idref", "")
-            state = _xml_true(sel.get("selected"))
-            if idref in self.rules:
-                selected[idref] = state
-            elif idref in self.group_rules:
-                for rid in self.group_rules[idref]:
-                    selected[rid] = state
+            if idref in state:
+                state[idref] = _xml_true(sel.get("selected"))
+        return {rid: state[rid] and all(state[gid] for gid in self.rule_groups[rid]) for rid in self.rules}
 
     def profile_values(self, profile_id: str) -> tuple[dict[str, str], dict[str, str]]:
         """Return (refine-value selectors, set-values) for a profile, honouring ``extends``."""
@@ -1167,7 +1181,6 @@ def build_tailoring_xml(
     datastream: str,
 ) -> tuple[str, str]:
     """Return (tailored profile id, XCCDF 1.2 tailoring XML)."""
-    ET.register_namespace("xccdf", NS_XCCDF)
     tailoring = ET.Element(TAG_TAILORING, {"id": TAILORING_ID})
     ET.SubElement(tailoring, _x("benchmark"), {"href": datastream})
     version = ET.SubElement(tailoring, _x("version"), {"time": _iso(_now_utc())})
@@ -1275,7 +1288,7 @@ def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
 
 def parse_tailoring_file(path: str) -> TailoringInfo:
     try:
-        text = Path(path).read_text()
+        text = Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:  # ValueError: not UTF-8
         raise BridgeError(f"cannot read tailoring file {path}: {exc}") from exc
     return parse_tailoring_xml(text, path)
@@ -1380,14 +1393,15 @@ def cmd_tailor_rule(args: list[str]) -> None:
     if not XCCDF_ID_RE.match(rule_id):
         raise BridgeError(f"invalid rule id: {rule_id!r}")
     remark = _validate_remark(_opt(args, "--remark") or "")
-    ds_path = resolve_datastream(None)
+    config = load_config()
+    ds_path = resolve_datastream(None, config)
     benchmark = load_benchmark(ds_path)
     profile = _find_profile(benchmark, base_profile_id)
     if profile is None:
         raise BridgeError(f"profile not found in datastream: {base_profile_id}")
     if rule_id not in _BenchmarkIndex(benchmark).rules:
         raise BridgeError(f"rule not found in datastream: {rule_id}")
-    registered, path, problem = _registered_tailoring(load_config(), base_profile_id, benchmark, ds_path, quiet=True)
+    registered, path, problem = _registered_tailoring(config, base_profile_id, benchmark, ds_path, quiet=True)
     if problem:
         raise BridgeError(f"the profile's customization cannot be changed as it is. {problem}")
     selected = state == "enable"
@@ -1662,23 +1676,37 @@ def cmd_list_results(_args: list[str]) -> None:
 def _currently_excluded(base_profile_id: str) -> list[str]:
     """The rules the profile's registered customization takes out of a scan today.
 
-    Only a customization a scan would apply counts (the same check the scanner's request makes),
-    read against the installed content; the content is loaded only when one is registered.
+    Resolved against the installed content like the scanner does, which is loaded only when the
+    customization disables something. A customization scans cannot apply (its base profile is gone
+    from the content, say) still reports its own unselects: the result page must not offer to
+    exclude what the file already excludes, and tailor-rule would refuse anyway.
     """
     config = load_config()
-    if not config.get("tailorings", {}).get(base_profile_id):
+    path = config.get("tailorings", {}).get(base_profile_id)
+    if not path:
         return []
+    try:
+        info = parse_tailoring_file(path)
+    except BridgeError:
+        return []
+    unselected = sorted({mod["idref"] for mod in info["modifications"] if mod["action"] == ACTION_UNSELECT})
+    return _resolved_exclusions(config, base_profile_id) if unselected else []
+
+
+def _resolved_exclusions(config: Config, base_profile_id: str) -> list[str]:
+    """What the registered customization excludes as the scanner would see it, else what its file says."""
     try:
         ds_path = resolve_datastream(None, config)
         benchmark = load_benchmark(ds_path)
+        registered, _path, _problem = _registered_tailoring(config, base_profile_id, benchmark, ds_path, quiet=True)
+        if registered is None:
+            raise BridgeError("the customization cannot be applied")
+        profile = ET.fromstring(registered["tailoring_xml"]).find(TAG_PROFILE)  # noqa: S314  (parsed already)
+        if profile is None:
+            raise BridgeError("no profile")
     except BridgeError:
-        return []
-    registered, _path, _problem = _registered_tailoring(config, base_profile_id, benchmark, ds_path, quiet=True)
-    if registered is None:
-        return []
-    profile = ET.fromstring(registered["tailoring_xml"]).find(TAG_PROFILE)  # noqa: S314  (parsed already)
-    if profile is None:
-        return []
+        info = parse_tailoring_file(str(config.get("tailorings", {}).get(base_profile_id)))
+        return sorted({mod["idref"] for mod in info["modifications"] if mod["action"] == ACTION_UNSELECT})
     return sorted(_customization_exclusions(_BenchmarkIndex(benchmark), profile))
 
 
@@ -1721,29 +1749,25 @@ class ParsedArf(TypedDict):
 
 
 def _customization_exclusions(index: _BenchmarkIndex, profile: ET.Element) -> dict[str, str]:
-    """The rules a tailoring profile's selects disable, each with its remark, in order of appearance.
-
-    As the scanner sees it: the last select for an id wins, a rule is skipped when its own select or
-    that of any group above it says so (a group switched back on does not undo a rule's own select),
-    and a rule the base profile never selected is no exclusion.
-    """
-    base_selected = index.selection(profile.get("extends", ""))
-    rules_off: dict[str, str] = {}
-    groups_off: dict[str, str] = {}
-    for sel in profile.findall(TAG_SELECT):
+    """The rules a tailoring profile takes out of a scan of its base profile, each with the remark of
+    the select that did it (the rule's own, else the nearest group's), in the content's order."""
+    selects = profile.findall(TAG_SELECT)
+    base = index.selection(profile.get("extends", ""))
+    tailored = index.selection(profile.get("extends", ""), selects)
+    switched_off: dict[str, str] = {}  # item id -> remark of the select that last switched it off
+    for sel in selects:
         idref = sel.get("idref", "")
-        table = rules_off if idref in index.rules else groups_off if idref in index.group_rules else None
-        if table is None:
-            continue
         if _xml_true(sel.get("selected")):
-            table.pop(idref, None)
+            switched_off.pop(idref, None)
         else:
-            table[idref] = _select_remark(sel)
-    excluded = dict(rules_off)
-    for group_id, remark in groups_off.items():
-        for rule_id in index.group_rules[group_id]:
-            excluded.setdefault(rule_id, remark)
-    return {rule_id: remark for rule_id, remark in excluded.items() if base_selected.get(rule_id, True)}
+            switched_off[idref] = _select_remark(sel)
+    excluded: dict[str, str] = {}
+    for rule_id in index.rules:
+        if not base[rule_id] or tailored[rule_id]:
+            continue
+        culprits = [rule_id, *reversed(index.rule_groups[rule_id])]
+        excluded[rule_id] = next((switched_off[item] for item in culprits if item in switched_off), "")
+    return excluded
 
 
 def _arf_exclusions(root: ET.Element, index: _BenchmarkIndex | None, not_selected: set[str]) -> list[RuleExclusion]:
@@ -1955,7 +1979,7 @@ def _resolve_scan_request(args: list[str]) -> ScanRequest:
             ET.Element(TAG_SELECT, {"idref": m["idref"], "selected": str(m["action"] == ACTION_SELECT).lower()})
             for m in tailoring["modifications"] if m["action"] in (ACTION_SELECT, ACTION_UNSELECT)
         ]
-        index.apply_selects(selection, selects)
+        selection = index.selection(base_profile_id, selects)
 
     return ScanRequest(
         profile_id=profile_id,
@@ -2215,11 +2239,9 @@ def extract_arf_tailoring(arf_path: str) -> str | None:
     tailoring = next(root.iter(TAG_TAILORING), None)
     if tailoring is None:
         return None
-    ET.register_namespace("xccdf", NS_XCCDF)
     fd, name = tempfile.mkstemp(prefix="cockpit-oscap-tailoring-", suffix=".xml")
-    with os.fdopen(fd, "w") as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write(ET.tostring(tailoring, encoding="unicode"))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(_serialize_tailoring(tailoring))
     return name
 
 
