@@ -2542,8 +2542,8 @@ def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> 
         "",
         f"Profile:     {result['profile_title'] or result['profile_id']} ({result['profile_id']})",
         f"Scanned:     {result['timestamp']}",
-        f"Score:       {result['score']:.1f}% ({result['counts'].get('pass', 0)} passed, "
-        f"{result['counts'].get('fail', 0)} failed, {result['counts'].get('error', 0)} errors)",
+        (f"Score:       {result['score']:.1f}% ({result['counts'].get('pass', 0)} passed, "
+         f"{result['counts'].get('fail', 0)} failed, {result['counts'].get('error', 0)} errors)"),
         f"Status:      {result['status']}",
         f"Content:     {result['datastream'] or 'unknown'}"
         + (f" (benchmark {result['benchmark_id']} {result['benchmark_version']})" if result["benchmark_id"] else ""),
