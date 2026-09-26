@@ -277,3 +277,12 @@
   -webkit-line-clamp: 3;
   line-clamp: 3;
 }
+
+// ---------------------------------------------------------------------------
+// Breadcrumbs: long profile titles wrap on narrow screens instead of forcing a horizontal scroll
+// ---------------------------------------------------------------------------
+
+.oscap-breadcrumb .pf-v6-c-breadcrumb__item {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

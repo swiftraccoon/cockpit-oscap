@@ -16,8 +16,8 @@
     "watch": "ESBUILD_WATCH='true' ./build.js",
     "build": "./build.js",
     "typecheck": "tsc --noEmit",
-    "eslint": "eslint src/",
-    "eslint:fix": "eslint --fix src/",
+    "eslint": "eslint src/ test/unit/",
+    "eslint:fix": "eslint --fix src/ test/unit/",
     "stylelint": "stylelint src/*.{css,scss}",
     "stylelint:fix": "stylelint --fix src/*.{css,scss}",
     "test": "python3 -m pytest",
@@ -25,6 +25,7 @@
     "test:unit": "node test/unit/run.mjs"
   },
   "devDependencies": {
+    "@types/node": "^22.20.4",
     "@types/react": "18.3.13",
     "@types/react-dom": "18.3.1",
     "@typescript-eslint/eslint-plugin": "8.57.1",

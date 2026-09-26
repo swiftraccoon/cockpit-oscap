@@ -167,7 +167,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
                 )}
                 {progress && (
                     <StackItem>
-                        <ScanEta progress={progress.progress} />
+                        <ScanEta scanKey={progress.started} progress={progress.progress} />
                     </StackItem>
                 )}
                 <StackItem>

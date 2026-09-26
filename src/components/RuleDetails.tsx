@@ -117,6 +117,12 @@ export const RuleDetails = ({ ruleId, datastream, message, description, onRemedi
             {error && (
                 <Alert component="h2" variant="danger" isInline isPlain title={_("Rule details are unavailable")}>{error}</Alert>
             )}
+            {data?.content_substituted && (
+                <Alert
+                    component="h2" variant="info" isInline isPlain
+                    title={_("Described from the currently installed content; the content this scan used is no longer installed.")}
+                />
+            )}
             <DescriptionList isCompact isHorizontal horizontalTermWidthModifier={{ default: "14ch" }}>
                 <DescriptionListGroup>
                     <DescriptionListTerm>{_("Description")}</DescriptionListTerm>

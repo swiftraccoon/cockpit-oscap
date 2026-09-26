@@ -247,7 +247,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     return (
         <>
             <PageSection type="breadcrumb" hasBodyWrapper={false}>
-                <Breadcrumb>
+                <Breadcrumb className="oscap-breadcrumb">
                     <BreadcrumbItem to="#/results" onClick={ev => { ev.preventDefault(); cockpit.location.go(["results"]) }}>
                         {_("Results")}
                     </BreadcrumbItem>

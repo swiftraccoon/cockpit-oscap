@@ -44,9 +44,9 @@ jobs:
           set -x
 
           TAG_VERSION="$(git describe --tags)"
-          git tag -l --format='%(contents:body)' ${TAG_VERSION} > release-note.txt
+          git tag -l --format='%(contents)' ${TAG_VERSION} > release-note.txt
 
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          # make dist names the tarball after its own VERSION (git describe with '-' turned into '.')
           gh release create --title ${TAG_VERSION} --notes-file release-note.txt  \
             ${TAG_VERSION} \
-            ${REPO_NAME}-${TAG_VERSION}.tar.xz
+            "${GITHUB_REPOSITORY#*/}"-*.tar.xz

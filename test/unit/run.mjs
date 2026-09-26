@@ -10,10 +10,11 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import esbuild from "esbuild";
 
-const root = path.resolve(new URL(".", import.meta.url).pathname, "..", "..");
+const root = fileURLToPath(new URL("../..", import.meta.url));
 const outdir = path.join(root, "node_modules", ".cache", "oscap-unit-tests");
 const entries = fs.readdirSync(path.join(root, "test", "unit"))
         .filter(name => name.endsWith(".test.ts"))
@@ -27,6 +28,8 @@ await esbuild.build({
     format: "esm",
     platform: "node",
     target: "node18",
+    // .mjs: package.json's "type" does not reach into node_modules, where the bundle lives
+    outExtension: { ".js": ".mjs" },
     nodePaths: [path.join(root, "pkg", "lib")],
     alias: { cockpit: path.join(root, "test", "unit", "cockpit-stub.ts") },
     logLevel: "warning",

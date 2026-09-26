@@ -30,6 +30,9 @@ jobs:
       - name: Build
         run: make
 
+      - name: Distribution tarball
+        run: make dist
+
       - name: Typecheck
         run: npm run typecheck
 

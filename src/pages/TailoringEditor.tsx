@@ -549,7 +549,7 @@ key={option.selector} value={option.selector}
     return (
         <>
             <PageSection type="breadcrumb" hasBodyWrapper={false}>
-                <Breadcrumb>
+                <Breadcrumb className="oscap-breadcrumb">
                     <BreadcrumbItem to="#/profiles" onClick={ev => { ev.preventDefault(); cockpit.location.go(["profiles"]) }}>
                         {_("Profiles")}
                     </BreadcrumbItem>

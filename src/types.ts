@@ -138,6 +138,8 @@ export interface RuleDetail {
     group_path: string[];
     has_fix: boolean;
     fix_systems: string[];
+    /** Described from the configured content because the one recorded with the result is gone. */
+    content_substituted: boolean;
 }
 
 // ---------------------------------------------------------------------------

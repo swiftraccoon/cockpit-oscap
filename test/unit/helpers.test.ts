@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+    emptyCounts,
     formatScore,
     matchesSearch,
     parseTimestamp,
@@ -104,6 +105,6 @@ describe("small helpers", () => {
     });
 
     it("counts only evaluated rules toward the total", () => {
-        assert.equal(scoredTotal({ pass: 2, fail: 1, error: 1, unknown: 0, notapplicable: 3, notchecked: 2, notselected: 9, informational: 0, fixed: 0 }), 4);
+        assert.equal(scoredTotal({ ...emptyCounts(), pass: 2, fail: 1, error: 1, notapplicable: 3, notchecked: 2 }), 4);
     });
 });

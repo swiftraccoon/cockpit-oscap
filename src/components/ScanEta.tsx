@@ -6,7 +6,7 @@
  * the server's. Rules vary a lot in cost, so it is an estimate.
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import cockpit from "cockpit";
 
 const _ = cockpit.gettext;
@@ -31,15 +31,30 @@ export function remainingText(anchor: EtaAnchor, progress: number, now: number):
     return cockpit.format(cockpit.ngettext("about $0 minute left", "about $0 minutes left", minutes), minutes);
 }
 
-export const ScanEta = ({ progress }: { progress: number }) => {
-    const anchor = useRef<EtaAnchor | null>(null);
-    if (anchor.current === null || progress < anchor.current.progress)
-        anchor.current = { progress, time: Date.now() };  // first sight of this scan
+/** One anchor per scan, kept outside React so the estimate survives the banner being hidden by a dialog. */
+const anchors = new Map<string, EtaAnchor>();
+
+function anchorFor(scanKey: string, progress: number): EtaAnchor {
+    const existing = anchors.get(scanKey);
+    if (existing && progress >= existing.progress)
+        return existing;
+    anchors.clear();  // only one scan runs at a time; earlier ones are history
+    const anchor = { progress, time: Date.now() };
+    anchors.set(scanKey, anchor);
+    return anchor;
+}
+
+export const ScanEta = ({ scanKey, progress }: {
+    /** Identifies the scan, e.g. its start timestamp. */
+    scanKey: string;
+    progress: number;
+}) => {
+    const anchor = anchorFor(scanKey, progress);
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), TICK_MS);
         return () => window.clearInterval(timer);
     }, []);
-    const text = remainingText(anchor.current, progress, now);
+    const text = remainingText(anchor, progress, now);
     return text ? <span className="oscap-muted oscap-eta">{text}</span> : null;
 };

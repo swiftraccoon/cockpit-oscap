@@ -62,6 +62,7 @@ export const ResultsPage = () => {
     const results = useAsync(listResults, [app.version]);
     const [search, setSearch] = useState("");
     const [error, setError] = useState<string | null>(null);
+    const [selected, setSelected] = useState<Set<string>>(() => new Set());
 
     if (results.loading && !results.data)
         return <Loading />;
@@ -112,6 +113,38 @@ variant="primary" onClick={() => app.runScan()}
 
     const shown = all.filter(s => matchesSearch(search, s.profile_title, s.profile_id, s.id));
     const byId = new Map(shown.map(s => [s.id, s]));
+    const readOnly = app.superuser === false;
+    // only rows that are listed count: a search hides rows, and deleted ones are gone
+    const selectedShown = shown.filter(s => selected.has(s.id));
+
+    function selectRow(id: string, isSelected: boolean) {
+        setSelected(prev => {
+            const next = new Set(prev);
+            if (isSelected)
+                next.add(id);
+            else
+                next.delete(id);
+            return next;
+        });
+    }
+
+    async function removeSelected() {
+        const ids = selectedShown.map(s => s.id);
+        const confirmed = await Dialogs.run(ConfirmDialog, {
+            title: cockpit.format(cockpit.ngettext("Delete $0 scan result?", "Delete $0 scan results?", ids.length), ids.length),
+            body: _("The selected scans and their reports will be deleted permanently."),
+            confirmText: _("Delete"),
+            isDanger: true,
+        });
+        if (!confirmed)
+            return;
+        await guarded(async () => {
+            for (const id of ids)
+                await deleteResult(id);
+            setSelected(new Set());
+            app.bump();
+        });
+    }
 
     const sortMethod = (rows: ListingTableRowProps[], direction: SortByDirection, index: number) => {
         const key = (row: ListingTableRowProps) => byId.get(String(row.props?.key));
@@ -150,6 +183,13 @@ variant="primary" onClick={() => app.runScan()}
                                 onClear={() => setSearch("")}
                             />
                         </ToolbarItem>
+                        {selectedShown.length > 0 && (
+                            <ToolbarItem>
+                                <Button id="results-delete-selected" variant="danger" size="sm" onClick={removeSelected}>
+                                    {cockpit.format(_("Delete $0 selected"), selectedShown.length)}
+                                </Button>
+                            </ToolbarItem>
+                        )}
                         <ToolbarItem align={{ default: "alignEnd" }}>
                             <span className="oscap-toolbar-count">
                                 {cockpit.format(cockpit.ngettext("$0 scan", "$0 scans", shown.length), shown.length)}
@@ -180,11 +220,21 @@ variant="primary" onClick={() => app.runScan()}
                     sortMethod={sortMethod}
                     emptyCaption={_("No scans match the search")}
                     isEmptyStateInTable
-                    onRowClick={(_ev, row) => cockpit.location.go(["results", String(row.props?.key)])}
+                    onRowClick={(ev, row) => {
+                        // a click on the row's checkbox selects; anywhere else opens the scan
+                        if (ev?.target instanceof Element && ev.target.closest("input, .pf-v6-c-table__check"))
+                            return;
+                        cockpit.location.go(["results", String(row.props?.key)]);
+                    }}
+                    {...!readOnly && {
+                        onSelect: (_ev, isSelected, _index, rowData) => selectRow(String(rowData.props?.id), isSelected),
+                        onHeaderSelect: (_ev, isSelected) => setSelected(isSelected ? new Set(shown.map(s => s.id)) : new Set()),
+                    }}
                     rows={shown.map(summary => {
                         const date = parseTimestamp(summary.timestamp);
                         return {
                             props: { key: summary.id },
+                            selected: selected.has(summary.id),
                             columns: [
                                 {
                                     title: date ? timeformat.dateTime(date) : summary.timestamp,
@@ -243,7 +293,7 @@ key="fix-ansible" isDisabled={!summary.has_arf || summary.counts.fail === 0}
                                                         {_("Download Ansible playbook")}
                                                     </DropdownItem>,
                                                     <DropdownItem
-key="delete" isDanger isDisabled={app.superuser === false}
+key="delete" isDanger isDisabled={readOnly}
                                                                   onClick={() => remove(summary)}
                                                     >
                                                         {_("Delete")}

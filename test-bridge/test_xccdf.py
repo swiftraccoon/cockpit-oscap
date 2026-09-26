@@ -187,5 +187,7 @@ def test_rule_info_falls_back_when_recorded_content_is_gone(run_bridge):
     info = run_bridge("rule-info", RULE_AUDIT, "--datastream", "/gone/ssg-old-ds.xml")
     assert info["id"] == RULE_AUDIT
     assert info["has_fix"] is True
+    assert info["content_substituted"] is True
+    assert run_bridge("rule-info", RULE_AUDIT)["content_substituted"] is False
     # other commands keep insisting on the content they were given
     assert "error" in run_bridge("profile-rules", PROFILE_BASE, "--datastream", "/gone/ssg-old-ds.xml", expect_rc=1)
