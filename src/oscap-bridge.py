@@ -102,6 +102,7 @@ REMEDIATE_RULE_TIMEOUT = 600
 OSCAP_EXIT_ERROR = 1
 ERROR_TAIL = 800
 STATE_WRITE_INTERVAL = 0.25
+FIX_SYSTEM_BASH = "urn:xccdf:fix:script:sh"  # the fix system `oscap generate fix --fix-type bash` applies
 
 RESULT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 XCCDF_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,300}$")
@@ -309,6 +310,7 @@ class ResultSummary(TypedDict):
     id: str
     timestamp: str
     profile_id: str
+    base_profile_id: str
     profile_title: str
     score: float
     counts: dict[str, int]
@@ -993,7 +995,7 @@ def rule_detail(ds_path: str, rule_id: str) -> RuleDetail:
         references=[Reference(href=r.get("href", ""), text=_text(r)) for r in rule.findall(_x("reference"))],
         idents=[Ident(system=i.get("system", ""), text=_text(i)) for i in rule.findall(_x("ident"))],
         group_path=index.group_path.get(rule_id, []),
-        has_fix=bool(fixes),
+        has_fix=any(f.get("system") == FIX_SYSTEM_BASH for f in fixes),
         fix_systems=sorted({f.get("system", "") for f in fixes}),
     )
 
@@ -1378,6 +1380,7 @@ def _summarize(result: ScanResult) -> ResultSummary:
         id=result["id"],
         timestamp=result["timestamp"],
         profile_id=result["profile_id"],
+        base_profile_id=result["base_profile_id"],
         profile_title=result["profile_title"],
         score=result["score"],
         counts=result["counts"],

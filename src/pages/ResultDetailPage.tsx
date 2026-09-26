@@ -20,7 +20,6 @@ import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/
 import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import { KebabDropdown } from "cockpit-components-dropdown";
 import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
@@ -30,6 +29,7 @@ import * as timeformat from "timeformat";
 import { deleteResult, getResult, listResults } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { RemediationDialog } from "../components/RemediationDialog";
 import { RuleDetails } from "../components/RuleDetails";
@@ -181,10 +181,16 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         }
     }
 
-    function remediateRules() {
+    function remediateRules(ruleIds?: string[]) {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<RemediationDialog result={loaded} onRescanned={() => app.bump()} />);
+        Dialogs.show(
+            <RemediationDialog
+                result={loaded}
+                {...ruleIds && { initialSelection: ruleIds }}
+                onRescanned={() => app.bump()}
+            />
+        );
     }
 
     const shown = result.results.filter(rule =>
@@ -311,15 +317,16 @@ flex={{ default: "flex_1" }} justifyContent={{ default: "justifyContentFlexEnd" 
                                 >
                                     <FlexItem>
                                         <Button
-id="result-remediate" variant="primary" onClick={remediateRules}
+id="result-remediate" variant="primary" onClick={() => remediateRules()}
                                                 isDisabled={!canRemediate}
                                         >
                                             {_("Remediate failed rules")}
                                         </Button>
                                     </FlexItem>
                                     <FlexItem>
-                                        <KebabDropdown
+                                        <ActionsMenu
                                             toggleButtonId="result-actions"
+                                            ariaLabel={_("Scan actions")}
                                             dropdownItems={[
                                                 <DropdownItem
 key="rescan" isDisabled={readOnly || app.scanning}
@@ -470,6 +477,8 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                         <RuleDetails
                                             ruleId={rule.rule_id} message={rule.message}
                                             active={Boolean(expandedRules[rule.rule_id])}
+                                            {...canRemediate && normalizeResult(rule.result) === "fail" &&
+                                                { onRemediate: () => remediateRules([rule.rule_id]) }}
                                         />
                                     ),
                                 };

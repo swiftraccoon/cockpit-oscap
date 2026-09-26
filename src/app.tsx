@@ -164,7 +164,10 @@ const AppShell = () => {
     } else {
         const Component = PAGE_COMPONENTS[page];
         content = (
-            <PageSection hasBodyWrapper={false} isFilled id={`page-${page}`}>
+            <PageSection
+hasBodyWrapper={false} isFilled id={`page-${page}`}
+                         role="tabpanel" aria-labelledby={`pf-tab-${page}-tab-${page}`}
+            >
                 <Component />
             </PageSection>
         );
@@ -173,6 +176,7 @@ const AppShell = () => {
     return (
         <AppContext.Provider value={context}>
             <Page className="no-masthead-sidebar" isContentFilled>
+                <h1 className="pf-v6-screen-reader">{_("Compliance")}</h1>
                 {!detail && (
                     <PageSection type="tabs" hasBodyWrapper={false}>
                         <div className="oscap-tabs-row">
@@ -184,7 +188,7 @@ const AppShell = () => {
                             >
                                 {PAGES.map(name => (
                                     <Tab
-key={name} eventKey={name} id={`tab-${name}`}
+key={name} eventKey={name} id={`tab-${name}`} tabContentId={`page-${name}`}
                                          title={<TabTitleText>{pageLabel(name)}</TabTitleText>}
                                     />
                                 ))}

@@ -10,7 +10,6 @@ import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.
 import { Card, CardBody, CardFooter, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
 import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
-import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
 import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
 import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
@@ -19,19 +18,21 @@ import { Gallery } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.j
 import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
 import cockpit from "cockpit";
 
-import { KebabDropdown } from "cockpit-components-dropdown";
 import { EmptyStatePanel } from "cockpit-components-empty-state";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
+import * as timeformat from "timeformat";
 
-import { deleteTailoring, getConfig, listProfiles, readFile, setConfig } from "../api";
+import { deleteTailoring, getConfig, listProfiles, listResults, readFile, setConfig } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { TailoredLabel } from "../components/labels";
+import { ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
-import { downloadFile, errorMessage, matchesSearch, profileShortName, safeFilename } from "../helpers";
-import type { ProfileInfo } from "../types";
+import { TruncatedText } from "../components/TruncatedText";
+import { downloadFile, errorMessage, matchesSearch, parseTimestamp, profileShortName, safeFilename } from "../helpers";
+import type { ProfileInfo, ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
 
@@ -39,8 +40,18 @@ export const ProfilesPage = () => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const [profiles, config] = await Promise.all([listProfiles(), getConfig()]);
-        return { profiles, config };
+        const [profiles, config, results] = await Promise.all([
+            listProfiles(),
+            getConfig(),
+            listResults().catch((): ResultSummary[] => []),
+        ]);
+        // newest first, so the first summary per base profile is its latest scan
+        const latest = new Map<string, ResultSummary>();
+        for (const summary of results) {
+            if (summary.status === "complete" && !latest.has(summary.base_profile_id))
+                latest.set(summary.base_profile_id, summary);
+        }
+        return { profiles, config, latest };
     }, [app.version]);
     const [search, setSearch] = useState("");
     const [busy, setBusy] = useState<string | null>(null);
@@ -51,7 +62,7 @@ export const ProfilesPage = () => {
     if (data.error || !data.data)
         return <ErrorState title={_("Failed to load profiles")} error={data.error} onRetry={() => data.reload()} />;
 
-    const { profiles, config } = data.data;
+    const { profiles, config, latest } = data.data;
     const datastreams = app.backend.content.available;
     const readOnly = app.superuser === false;
 
@@ -172,6 +183,8 @@ export const ProfilesPage = () => {
                             {shown.map(profile => {
                                 const isActive = profile.id === config.active_profile;
                                 const short = profileShortName(profile.id);
+                                const last = latest.get(profile.id);
+                                const lastDate = last ? parseTimestamp(last.timestamp) : null;
                                 const kebab = [
                                     <DropdownItem
 key="scan" isDisabled={readOnly || app.scanning}
@@ -214,16 +227,10 @@ key={profile.id} id={`profile-${safeFilename(short)}`}
                                         <CardBody>
                                             <Stack hasGutter>
                                                 <StackItem>
-                                                    <ExpandableSection
-                                                        variant="truncate"
-                                                        truncateMaxLines={3}
-                                                        toggleTextExpanded={_("Show less")}
-                                                        toggleTextCollapsed={_("Show more")}
-                                                    >
-                                                        <span className="oscap-prose">
-                                                            {profile.description || _("No description available.")}
-                                                        </span>
-                                                    </ExpandableSection>
+                                                    <TruncatedText
+                                                        id={`profile-description-${safeFilename(short)}`}
+                                                        text={profile.description || _("No description available.")}
+                                                    />
                                                 </StackItem>
                                                 <StackItem>
                                                     <Content component="small">
@@ -232,6 +239,25 @@ key={profile.id} id={`profile-${safeFilename(short)}`}
                                                         {" · "}
                                                         <span className="oscap-mono">{short}</span>
                                                     </Content>
+                                                </StackItem>
+                                                <StackItem>
+                                                    <span className="oscap-inline-list oscap-small">
+                                                        {last
+                                                            ? (
+                                                                <>
+                                                                    <ScoreLabel score={last.score} />
+                                                                    <Button
+variant="link" isInline className="oscap-small"
+                                                                            onClick={() => cockpit.location.go(["results", last.id])}
+                                                                    >
+                                                                        {lastDate
+                                                                            ? cockpit.format(_("scanned $0"), timeformat.distanceToNow(lastDate))
+                                                                            : _("last scan")}
+                                                                    </Button>
+                                                                </>
+                                                            )
+                                                            : <span className="oscap-muted">{_("Not scanned yet")}</span>}
+                                                    </span>
                                                 </StackItem>
                                             </Stack>
                                         </CardBody>
@@ -260,9 +286,10 @@ variant="link" size="sm" isInline
                                                 {_("Customize")}
                                             </Button>
                                             <span className="oscap-card-actions-end">
-                                                <KebabDropdown
-toggleButtonId={`profile-actions-${safeFilename(short)}`}
-                                                               dropdownItems={kebab}
+                                                <ActionsMenu
+                                                    toggleButtonId={`profile-actions-${safeFilename(short)}`}
+                                                    ariaLabel={cockpit.format(_("Actions for $0"), profile.title)}
+                                                    dropdownItems={kebab}
                                                 />
                                             </span>
                                         </CardFooter>

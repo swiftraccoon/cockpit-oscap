@@ -24,7 +24,6 @@ import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/
 import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import { KebabDropdown } from "cockpit-components-dropdown";
 import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
@@ -33,6 +32,7 @@ import { useDialogs } from "dialogs";
 import { createTailoring, deleteTailoring, importTailoring, listProfiles, parseTailoringFile, profileRules } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SeverityLabel } from "../components/labels";
 import { RuleDetails } from "../components/RuleDetails";
@@ -583,7 +583,7 @@ id="tailoring-save" variant="primary" onClick={save} isLoading={busy}
                                     <Button variant="secondary" onClick={() => setCurrent(saved)} isDisabled={!unsaved || busy}>
                                         {_("Discard changes")}
                                     </Button>
-                                    <KebabDropdown toggleButtonId="tailoring-actions" dropdownItems={kebab} />
+                                    <ActionsMenu ariaLabel={_("Customization actions")} toggleButtonId="tailoring-actions" dropdownItems={kebab} />
                                     <input ref={fileInput} type="file" accept=".xml,application/xml" hidden onChange={importFile} />
                                 </div>
                             </FlexItem>
@@ -592,6 +592,7 @@ id="tailoring-save" variant="primary" onClick={save} isLoading={busy}
                     {notice && (
                         <StackItem>
                             <Alert
+component="h2"
 variant={notice.variant} isInline title={notice.title}
                                    actionClose={<AlertActionCloseButton onClose={() => setNotice(null)} />}
                             />
@@ -607,11 +608,21 @@ variant={notice.variant} isInline title={notice.title}
 id="tailoring-tabs" activeKey={tab} onSelect={(_ev, key) => setTab(key as "rules" | "values")}
                               isSubtab aria-label={_("Profile sections")}
                         >
-                            <Tab eventKey="rules" ouiaId="tailoring-tab-rules" title={<TabTitleText>{cockpit.format(_("Rules ($0)"), rules.length)}</TabTitleText>} />
-                            <Tab eventKey="values" ouiaId="tailoring-tab-values" title={<TabTitleText>{cockpit.format(_("Values ($0)"), values.length)}</TabTitleText>} />
+                            <Tab
+eventKey="rules" ouiaId="tailoring-tab-rules" tabContentId="tailoring-panel"
+                                 title={<TabTitleText>{cockpit.format(_("Rules ($0)"), rules.length)}</TabTitleText>}
+                            />
+                            <Tab
+eventKey="values" ouiaId="tailoring-tab-values" tabContentId="tailoring-panel"
+                                 title={<TabTitleText>{cockpit.format(_("Values ($0)"), values.length)}</TabTitleText>}
+                            />
                         </Tabs>
                     </StackItem>
-                    <StackItem>{tab === "rules" ? rulesTable : valuesTable}</StackItem>
+                    <StackItem>
+                        <div id="tailoring-panel" role="tabpanel" aria-labelledby={`pf-tab-${tab}-tailoring-tabs`}>
+                            {tab === "rules" ? rulesTable : valuesTable}
+                        </div>
+                    </StackItem>
                 </Stack>
             </PageSection>
         </>

@@ -13,7 +13,6 @@ import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/
 import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import { KebabDropdown } from "cockpit-components-dropdown";
 import { EmptyStatePanel } from "cockpit-components-empty-state";
 import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps } from "cockpit-components-table";
@@ -23,6 +22,7 @@ import * as timeformat from "timeformat";
 import { RESULTS_DIR, deleteResult, generateFix, generateReport, listResults, readFile } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
@@ -198,8 +198,10 @@ variant="primary" onClick={() => app.runScan()}
                                 {
                                     title: (
                                         <span onClick={ev => ev.stopPropagation()} onKeyDown={ev => ev.stopPropagation()}>
-                                            <KebabDropdown
+                                            <ActionsMenu
                                                 toggleButtonId={`result-actions-${summary.id}`}
+                                                ariaLabel={cockpit.format(_("Actions for the scan from $0"),
+                                                                          date ? timeformat.dateTime(date) : summary.timestamp)}
                                                 dropdownItems={[
                                                     <DropdownItem
 key="view"

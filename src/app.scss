@@ -256,3 +256,24 @@
 .oscap-trend-readout {
   font-size: var(--pf-t--global--font--size--sm);
 }
+
+// ---------------------------------------------------------------------------
+// Truncated prose
+// ---------------------------------------------------------------------------
+
+.oscap-truncated {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--pf-t--global--spacer--xs);
+}
+
+.oscap-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  /* stylelint-disable-next-line property-no-vendor-prefix */
+  -webkit-box-orient: vertical;
+  /* stylelint-disable-next-line property-no-vendor-prefix */
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}

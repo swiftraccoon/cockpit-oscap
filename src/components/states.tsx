@@ -33,6 +33,7 @@ export const ErrorAlert = ({ title, error, onRetry, onDismiss }: {
     onDismiss?: () => void;
 }) => (
     <Alert
+component="h2"
         variant="danger"
         isInline
         title={title}
@@ -101,7 +102,7 @@ export const SetupNeeded = ({ backend, onRetry }: { backend: BackendInfo; onRetr
 };
 
 export const LimitedAccessAlert = () => (
-    <Alert variant="warning" isInline isPlain title={_("Limited access")}>
+    <Alert component="h2" variant="warning" isInline isPlain title={_("Limited access")}>
         {_("Running scans, applying remediation and changing settings require administrative access.")}
     </Alert>
 );

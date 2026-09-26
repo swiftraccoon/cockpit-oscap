@@ -10,6 +10,20 @@ DISA STIG, PCI DSS or ANSSI, drill into every rule, customize profiles, apply
 remediation with guard rails, and keep the system continuously assessed with
 scheduled scans.
 
+## Screenshots
+
+| Overview | Scan results |
+|---|---|
+| ![Overview: the latest score with its trend, the active profile, scheduled scanning and the rules that need attention](docs/screenshots/overview.png) | ![A scan result: summary, comparison with the previous scan and every rule with details on demand](docs/screenshots/result-detail.png) |
+
+| Profiles | Profile customization |
+|---|---|
+| ![Profiles installed on the system, with their last score](docs/screenshots/profiles.png) | ![The tailoring editor: rules grouped by category with their description and references](docs/screenshots/tailoring-editor.png) |
+
+| Guided remediation | Scheduled scans |
+|---|---|
+| ![The remediation dialog with per-rule risk classification](docs/screenshots/remediation.png) | ![The schedule page: timer status and the schedule form](docs/screenshots/schedule.png) |
+
 ## Features
 
 - **Overview** – the latest compliance score, the change since the previous

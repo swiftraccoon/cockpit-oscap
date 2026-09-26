@@ -55,8 +55,10 @@ function buildScript(result: ScanResult, rules: FixRuleInfo[]): string {
     return lines.join("\n");
 }
 
-export const RemediationDialog = ({ result, onRescanned }: {
+export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
     result: ScanResult;
+    /** Rules to pre-select instead of the default (everything but high-risk fixes). */
+    initialSelection?: string[];
     onRescanned?: (rescan: ScanResult) => void;
 }) => {
     const Dialogs = useDialogs();
@@ -75,12 +77,14 @@ export const RemediationDialog = ({ result, onRescanned }: {
     const fixable = useMemo(() => (fix.data?.rules ?? []).filter(r => r.has_fix), [fix.data]);
     const unfixable = useMemo(() => (fix.data?.rules ?? []).filter(r => !r.has_fix), [fix.data]);
 
-    // Pre-select everything except high-risk fixes once the fixes are known
+    // Pre-select the requested rules, or everything except high-risk fixes, once the fixes are known
     const selection = useMemo(() => {
         if (selected)
             return selected;
+        if (initialSelection)
+            return new Set(fixable.filter(r => initialSelection.includes(r.id)).map(r => r.id));
         return new Set(fixable.filter(r => r.risk_level !== "high").map(r => r.id));
-    }, [selected, fixable]);
+    }, [selected, fixable, initialSelection]);
 
     const selectedRules = fixable.filter(r => selection.has(r.id));
 
@@ -149,7 +153,7 @@ export const RemediationDialog = ({ result, onRescanned }: {
             body = (
                 <Stack hasGutter>
                     <StackItem>
-                        <Alert variant="warning" isInline title={_("Remediation changes this system's configuration")}>
+                        <Alert variant="warning" isInline component="h2" title={_("Remediation changes this system's configuration")}>
                             {_("Review each fix before applying it. Fixes that touch authentication, SSH, the firewall, SELinux, mounts or the boot loader are marked high risk and are not selected by default. Changes are not undone automatically.")}
                         </Alert>
                     </StackItem>
@@ -259,6 +263,7 @@ export const RemediationDialog = ({ result, onRescanned }: {
             <Stack hasGutter>
                 <StackItem>
                     <Alert
+component="h2"
                         variant={outcome.success ? "success" : "warning"}
                         isInline
                         title={cockpit.format(_("$0 of $1 fixes applied"), applied, outcome.rules.length)}
@@ -322,6 +327,7 @@ export const RemediationDialog = ({ result, onRescanned }: {
             <Stack hasGutter>
                 <StackItem>
                     <Alert
+component="h2"
 variant={remaining.length === 0 ? "success" : "warning"} isInline
                            title={cockpit.format(_("$0 of $1 remediated rules now pass"), fixed.length, attempted.length)}
                     >
