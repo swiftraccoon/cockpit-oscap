@@ -97,7 +97,7 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate, onExclude }: {
+export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate, onExclude, excluded = false }: {
     ruleId: string;
     /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
     datastream?: string | undefined;
@@ -109,6 +109,8 @@ export const RuleDetails = ({ ruleId, datastream, message, description, onRemedi
     onRemediate?: () => void;
     /** Offered when the rule can be excluded from its profile's customization (with a justification). */
     onExclude?: () => void;
+    /** The profile's customization already disables the rule (later scans skip it). */
+    excluded?: boolean;
 }) => {
     // Callers mount this only for expanded rows, so the fetch happens on first expansion.
     const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
@@ -185,16 +187,17 @@ id={`remediate-${ruleId}`} variant="secondary" size="sm"
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}
-                {onExclude && (
+                {(excluded || onExclude) && (
                     <DescriptionListGroup>
-                        <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
+                        <DescriptionListTerm>{_("Customization")}</DescriptionListTerm>
                         <DescriptionListDescription>
-                            <span className="oscap-inline-list">
-                                {_("Enabled in this profile")}
-                                <Button id={`exclude-${ruleId}`} variant="link" isInline onClick={onExclude}>
-                                    {_("Exclude from profile…")}
-                                </Button>
-                            </span>
+                            {excluded
+                                ? <span id={`excluded-${ruleId}`}>{_("Excluded from the profile; later scans skip this rule.")}</span>
+                                : (
+                                    <Button id={`exclude-${ruleId}`} variant="link" isInline onClick={onExclude}>
+                                        {_("Exclude from profile…")}
+                                    </Button>
+                                )}
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}

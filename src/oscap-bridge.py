@@ -138,7 +138,7 @@ TAG_WARNING = _x("warning")
 TAG_SELECT = _x("select")
 TAG_SET_VALUE = _x("set-value")
 TAG_REMARK = _x("remark")
-MAX_REMARK_LENGTH = 1000
+MAX_REMARK_LENGTH = 4000
 MAX_VALUE_LENGTH = 4000
 TAG_REFINE_VALUE = _x("refine-value")
 TAG_TEST_RESULT = _x("TestResult")
@@ -317,6 +317,8 @@ class ScanResult(TypedDict):
     counts: dict[str, int]
     results: list[RuleResultItem]
     exclusions: list[RuleExclusion]
+    # not stored: the rules the profile's customization disables today (get-result fills it in)
+    currently_excluded: list[str]
     arf_path: str
     json_path: str
 
@@ -512,11 +514,20 @@ def _parse_json_arg(text: str, what: str) -> object:
         raise BridgeError(f"invalid {what} JSON: {exc}") from exc
 
 
+_VALUE_OPTIONS = frozenset((
+    "--datastream", "--tailoring-path", "--rules", "--source", "--type", "--rescan-of", "--remark"))
+
+
 def _opt(args: list[str], name: str) -> str | None:
-    """Return the value following ``--name`` in args, or None."""
+    """Return the value following ``--name`` in args, or None; another option's value never counts."""
+    skip = False
     for i, arg in enumerate(args):
-        if arg == name and i + 1 < len(args):
-            return args[i + 1]
+        if skip:
+            skip = False
+        elif arg in _VALUE_OPTIONS:
+            if arg == name:
+                return args[i + 1] if i + 1 < len(args) else None
+            skip = True
     return None
 
 
@@ -528,7 +539,7 @@ def _positional(args: list[str]) -> list[str]:
         if skip:
             skip = False
         elif arg.startswith("--"):
-            skip = arg in ("--datastream", "--tailoring-path", "--rules", "--source", "--type", "--rescan-of")
+            skip = arg in _VALUE_OPTIONS
         else:
             result.append(arg)
     return result
@@ -1098,7 +1109,8 @@ def _tailoring_path_for(base_profile_id: str) -> Path:
     return TAILORING_DIR / f"{safe}-tailoring.xml"
 
 
-_XML_UNSAFE_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+# control characters XML 1.0 cannot carry, and lone surrogates (JSON can encode them, UTF-8 cannot)
+_XML_UNSAFE_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
 def _validate_xml_text(raw: object, what: str, max_length: int) -> str:
@@ -1182,6 +1194,31 @@ def build_tailoring_xml(
     return profile_id, f'<?xml version="1.0" encoding="UTF-8"?>\n{body}\n'
 
 
+def _select_remark(sel: ET.Element) -> str:
+    """A select's justification; SCAP Workbench and other tools may attach several remarks."""
+    return " ".join(filter(None, (_text(r) for r in sel.findall(TAG_REMARK))))
+
+
+def _edit_tailoring_select(xml_text: str, rule_id: str, *, selected: bool, remark: str) -> str:
+    """The tailoring document with one rule's select replaced; everything else stays as it was."""
+    ET.register_namespace("xccdf", NS_XCCDF)
+    root = ET.fromstring(xml_text)  # noqa: S314  (the caller parsed it already)
+    profile = root.find(TAG_PROFILE)
+    if profile is None:
+        raise BridgeError("tailoring document does not contain a Profile element")
+    for old in profile.findall(TAG_SELECT):
+        if old.get("idref") == rule_id:
+            profile.remove(old)
+    select = ET.SubElement(profile, TAG_SELECT, {"idref": rule_id, "selected": str(selected).lower()})
+    if remark:
+        ET.SubElement(select, TAG_REMARK).text = remark
+    version = root.find(_x("version"))
+    if version is not None:
+        version.set("time", _iso(_now_utc()))
+    ET.indent(root)
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n{ET.tostring(root, encoding="unicode")}\n'
+
+
 def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
     try:
         root = ET.fromstring(xml_text)  # noqa: S314
@@ -1197,8 +1234,7 @@ def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
     for sel in profile.findall(TAG_SELECT):
         action = ACTION_SELECT if _xml_true(sel.get("selected")) else ACTION_UNSELECT
         mod = TailoringModification(idref=sel.get("idref", ""), action=action)
-        # SCAP Workbench and other tools may attach several remarks; keep them together
-        remark = " ".join(filter(None, (_text(r) for r in sel.findall(TAG_REMARK))))
+        remark = _select_remark(sel)
         if remark:
             mod["remark"] = remark
         modifications.append(mod)
@@ -1328,23 +1364,33 @@ def cmd_tailor_rule(args: list[str]) -> None:
     if not XCCDF_ID_RE.match(rule_id):
         raise BridgeError(f"invalid rule id: {rule_id!r}")
     remark = _validate_remark(_opt(args, "--remark") or "")
-    ds_path = resolve_datastream(_opt(args, "--datastream"))
+    requested = _opt(args, "--datastream")
+    if requested and not Path(requested).is_file():
+        # a result names the content it was scanned with; the customization applies to what is installed
+        log.info("datastream %s is gone; customizing %s in the configured content", requested, base_profile_id)
+        requested = None
+    ds_path = resolve_datastream(requested)
     benchmark = load_benchmark(ds_path)
     profile = _find_profile(benchmark, base_profile_id)
     if profile is None:
         raise BridgeError(f"profile not found in datastream: {base_profile_id}")
     if rule_id not in _BenchmarkIndex(benchmark).rules:
         raise BridgeError(f"rule not found in datastream: {rule_id}")
-    registered, _path, problem = _registered_tailoring(load_config(), base_profile_id, benchmark, ds_path, quiet=True)
+    registered, path, problem = _registered_tailoring(load_config(), base_profile_id, benchmark, ds_path, quiet=True)
     if problem:
         raise BridgeError(f"the profile's customization cannot be changed as it is. {problem}")
-    modifications = [mod for mod in (registered["modifications"] if registered else [])
-                     if not (mod["idref"] == rule_id and mod["action"] in (ACTION_SELECT, ACTION_UNSELECT))]
-    change = TailoringModification(idref=rule_id, action=ACTION_SELECT if state == "enable" else ACTION_UNSELECT)
-    if remark:
-        change["remark"] = remark
-    modifications.append(change)
-    output_json(_write_tailoring(base_profile_id, profile, modifications, ds_path))
+    selected = state == "enable"
+    if registered is None or path is None:
+        change = TailoringModification(idref=rule_id, action=ACTION_SELECT if selected else ACTION_UNSELECT)
+        if remark:
+            change["remark"] = remark
+        output_json(_write_tailoring(base_profile_id, profile, [change], ds_path))
+        return
+    # an imported file may hold more than the editor models (refine-rule, further profiles): edit it in place
+    xml_text = _edit_tailoring_select(registered["tailoring_xml"], rule_id, selected=selected, remark=remark)
+    info = parse_tailoring_xml(xml_text, path)
+    _atomic_write(Path(path), xml_text)
+    output_json(info)
 
 
 def _read_stdin_or_file(arg: str) -> str:
@@ -1505,6 +1551,7 @@ def _load_result(result_id: str) -> ScanResult:
         counts=counts,
         results=results,
         exclusions=_coerce_exclusions(raw.get("exclusions")),
+        currently_excluded=[],
         arf_path=_existing_arf(arf_path, raw.get("arf_path")),
         json_path=str(json_path),
     )
@@ -1601,10 +1648,24 @@ def cmd_list_results(_args: list[str]) -> None:
     output_json(list_results())
 
 
+def _currently_excluded(base_profile_id: str) -> list[str]:
+    """The rules (and groups) the profile's registered customization disables today."""
+    path = load_config().get("tailorings", {}).get(base_profile_id)
+    if not path:
+        return []
+    try:
+        info = parse_tailoring_file(path)
+    except BridgeError:
+        return []
+    return sorted({mod["idref"] for mod in info["modifications"] if mod["action"] == ACTION_UNSELECT})
+
+
 def cmd_get_result(args: list[str]) -> None:
     if not args:
         raise BridgeError("get-result requires a result id")
-    output_json(_load_result(args[0]))
+    result = _load_result(args[0])
+    result["currently_excluded"] = _currently_excluded(result["base_profile_id"])
+    output_json(result)
 
 
 def cmd_delete_result(args: list[str]) -> None:
@@ -1638,24 +1699,26 @@ class ParsedArf(TypedDict):
 
 
 def _arf_exclusions(root: ET.Element, index: _BenchmarkIndex | None, not_selected: set[str]) -> list[RuleExclusion]:
-    """The rules the embedded tailoring disabled, in the tailoring's order, with their remarks."""
+    """The rules the embedded tailoring took out of the scan, with their remarks.
+
+    A select may name a group (all its rules), a later select for a rule overrides an earlier one
+    (as the scanner applies them), and a rule the base profile never selected is no exclusion.
+    """
     tailoring = next(root.iter(TAG_TAILORING), None)
-    if tailoring is None:
+    profile = tailoring.find(TAG_PROFILE) if tailoring is not None else None
+    if profile is None or index is None:
         return []
-    exclusions: list[RuleExclusion] = []
-    seen: set[str] = set()
-    for sel in tailoring.iter(TAG_SELECT):
-        rule_id = sel.get("idref", "")
-        if _xml_true(sel.get("selected")) or rule_id not in not_selected or rule_id in seen:
-            continue
-        seen.add(rule_id)
-        rule = index.rules.get(rule_id) if index else None
-        exclusions.append(RuleExclusion(
-            rule_id=rule_id,
-            title=_text(rule.find(TAG_TITLE)) if rule is not None else "",
-            remark=" ".join(filter(None, (_text(r) for r in sel.findall(TAG_REMARK)))),
-        ))
-    return exclusions
+    base_selected = index.selection(profile.get("extends", ""))
+    disabled: dict[str, str] = {}  # rule id -> remark, in order of appearance
+    for sel in profile.findall(TAG_SELECT):
+        idref = sel.get("idref", "")
+        for rule_id in [idref] if idref in index.rules else index.group_rules.get(idref, []):
+            if _xml_true(sel.get("selected")):
+                disabled.pop(rule_id, None)
+            else:
+                disabled[rule_id] = _select_remark(sel)
+    return [RuleExclusion(rule_id=rule_id, title=_text(index.rules[rule_id].find(TAG_TITLE)), remark=remark)
+            for rule_id, remark in disabled.items() if rule_id in not_selected and base_selected.get(rule_id, True)]
 
 
 def parse_arf(arf_path: str) -> ParsedArf:
@@ -1968,6 +2031,7 @@ def _save_result(request: ScanRequest, parsed: ParsedArf, *, result_id: str, tim
         counts=_count_results(parsed["results"]),
         results=parsed["results"],
         exclusions=parsed["exclusions"],
+        currently_excluded=[],
         arf_path=str(arf_path),
         json_path=str(json_path),
     )

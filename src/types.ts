@@ -200,6 +200,8 @@ export interface ScanResult {
     counts: ResultCounts;
     results: RuleResultItem[];
     exclusions: RuleExclusion[];
+    /** Rules (or groups) the profile's customization disables today; only get-result fills it. */
+    currently_excluded: string[];
     arf_path: string;
     json_path: string;
 }

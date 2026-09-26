@@ -69,6 +69,7 @@ const _ = cockpit.gettext;
 
 type StateFilter = "all" | "selected" | "unselected" | "changed";
 const CUSTOM = "__custom__";
+const REMARK_COMMIT_MS = 250;
 
 const ReviewChangesDialog = ({ changes, dialogResult }: {
     changes: ChangeDescription[];
@@ -114,20 +115,36 @@ const JustificationField = ({ id, value, enabled, readOnly, onCommit }: {
     readOnly: boolean;
     onCommit: (text: string) => void;
 }) => {
+    // typing must not re-render a table of hundreds of rules on every keystroke, yet the Save button
+    // has to follow the text closely: the draft reaches the editor state after a short pause
     const [draft, setDraft] = useState(value);
+    const timer = useRef<number | null>(null);
     useEffect(() => setDraft(value), [value]);
-    const commit = () => { if (draft !== value) onCommit(draft); };
+    useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+    const commit = (text: string) => {
+        if (timer.current !== null)
+            window.clearTimeout(timer.current);
+        timer.current = null;
+        if (text !== value)
+            onCommit(text);
+    };
+    const change = (text: string) => {
+        setDraft(text);
+        if (timer.current !== null)
+            window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => commit(text), REMARK_COMMIT_MS);
+    };
     return (
-        <Form className="oscap-expanded-details oscap-remark-form" onSubmit={ev => { ev.preventDefault(); commit() }}>
+        <Form className="oscap-expanded-details oscap-remark-form" onSubmit={ev => { ev.preventDefault(); commit(draft) }}>
             <FormGroup label={_("Justification")} fieldId={id}>
                 <TextInput
                     id={id}
                     value={draft}
                     isDisabled={readOnly}
-                    maxLength={1000}
+                    maxLength={4000}
                     placeholder={enabled ? _("Why this rule is enabled here") : _("Why this rule is disabled here")}
-                    onChange={(_ev, text) => setDraft(text)}
-                    onBlur={commit}
+                    onChange={(_ev, text) => change(text)}
+                    onBlur={() => commit(draft)}
                 />
                 <FormHelperText>
                     <HelperText>
@@ -627,7 +644,7 @@ id="tailoring-save" variant="primary" onClick={save} isLoading={busy}
                                     <Button variant="secondary" onClick={() => setCurrent(saved)} isDisabled={!unsaved || busy}>
                                         {_("Discard changes")}
                                     </Button>
-                                    {unsaved && pending.length > 0 && (
+                                    {unsaved && (
                                         <Button
                                             id="tailoring-review" variant="link" isInline
                                             onClick={() => Dialogs.run(ReviewChangesDialog, {

@@ -113,23 +113,35 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
         <xccdf:Tailoring id="t">
           <xccdf:Profile id="{PROFILE_BASE}_customized" extends="{PROFILE_BASE}">
             <xccdf:select idref="{RULE_NEVER}" selected="false">
-              <xccdf:remark>Not applicable: no such service</xccdf:remark>
+              <xccdf:remark>the base profile never selected this one</xccdf:remark>
+            </xccdf:select>
+            <xccdf:select idref="g4" selected="false">
+              <xccdf:remark>SSH is not installed</xccdf:remark>
               <xccdf:remark>ticket 42</xccdf:remark>
             </xccdf:select>
-            <xccdf:select idref="{RULE_NEVER}" selected="false"/>
+            <xccdf:select idref="{RULE_TIMEOUT}" selected="false">
+              <xccdf:remark>superseded</xccdf:remark>
+            </xccdf:select>
+            <xccdf:select idref="{RULE_TIMEOUT}" selected="0">
+              <xccdf:remark>the last select wins</xccdf:remark>
+            </xccdf:select>
             <xccdf:select idref="{RULE_AUDIT}" selected="false">
               <xccdf:remark>still evaluated</xccdf:remark>
             </xccdf:select>
-            <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="1"/>
           </xccdf:Profile>
         </xccdf:Tailoring>
         <arf:report id="xccdf1">"""
     arf = tmp_path / "tailored.arf.xml"
-    arf.write_text(SYNTHETIC_ARF.replace('<arf:report id="xccdf1">', tailoring, 1))
+    # the SSH timeout rule was skipped this time, and the base content never selects RULE_NEVER
+    never = f'<xccdf:Rule id="{RULE_NEVER}" severity="low"'
+    arf.write_text(SYNTHETIC_ARF.replace('<arf:report id="xccdf1">', tailoring, 1)
+                   .replace("<xccdf:result>error</xccdf:result>", "<xccdf:result>notselected</xccdf:result>")
+                   .replace(never, f'{never} selected="false"'))
     parsed = bridge.parse_arf(str(arf))
-    # only rules the scan really skipped count, once each, and remarks travel along
+    # a group select reaches its rules, the last select for a rule counts, rules that were evaluated
+    # or that the base profile never selected are no exclusions
     assert parsed["exclusions"] == [
-        {"rule_id": RULE_NEVER, "title": "Never selected", "remark": "Not applicable: no such service ticket 42"}]
+        {"rule_id": RULE_TIMEOUT, "title": "Set SSH idle timeout", "remark": "the last select wins"}]
     assert [r["rule_id"] for r in parsed["results"]][:2] == [RULE_AUDIT, RULE_ROOT_LOGIN]
     # stored results from before this field carry none; a malformed field is ignored
     _write_result(bridge, "2026-04-08T025531-base")
@@ -137,6 +149,16 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
     _write_result(bridge, "2026-04-08T025532-base", exclusions=[{"rule_id": RULE_NEVER, "remark": "why"}, "junk", {}])
     loaded = bridge._load_result("2026-04-08T025532-base")
     assert loaded["exclusions"] == [{"rule_id": RULE_NEVER, "title": "", "remark": "why"}]
+
+
+def test_get_result_reports_what_the_customization_excludes_today(run_bridge, bridge):
+    _write_result(bridge, "2026-04-08T025531-base", base_profile_id=PROFILE_BASE)
+    assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == []
+    run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "waived")
+    run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "enable")
+    assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == [RULE_ROOT_LOGIN]
+    # only get-result computes it; listings and stored files do not carry it
+    assert "currently_excluded" not in json.loads((bridge.RESULTS_DIR / "2026-04-08T025531-base.json").read_text())
 
 
 def test_prune_results_keeps_newest(bridge):

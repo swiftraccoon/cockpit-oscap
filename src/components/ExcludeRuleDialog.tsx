@@ -53,7 +53,10 @@ export const ExcludeRuleDialog = (props: ExcludeRuleDialogProps & { dialogResult
     }
 
     return (
-        <Modal isOpen variant="medium" position="top" onClose={() => dialogResult.resolve(false)} id="exclude-rule-dialog">
+        <Modal
+            isOpen variant="medium" position="top" id="exclude-rule-dialog"
+            onClose={() => { if (!busy) dialogResult.resolve(false); }}
+        >
             <ModalHeader title={_("Exclude rule from profile?")} />
             <ModalBody>
                 <Form id="exclude-rule-form" onSubmit={ev => { ev.preventDefault(); if (ready) exclude(); }}>
@@ -83,7 +86,10 @@ export const ExcludeRuleDialog = (props: ExcludeRuleDialogProps & { dialogResult
                 </Form>
             </ModalBody>
             <ModalFooter>
-                <Button id="exclude-rule-confirm" variant="primary" onClick={exclude} isDisabled={!ready} isLoading={busy}>
+                <Button
+                    id="exclude-rule-confirm" variant="primary" type="submit" form="exclude-rule-form"
+                    isDisabled={!ready} isLoading={busy}
+                >
                     {_("Exclude rule")}
                 </Button>
                 <Button variant="link" onClick={() => dialogResult.resolve(false)} isDisabled={busy}>{_("Cancel")}</Button>

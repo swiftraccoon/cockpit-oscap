@@ -71,7 +71,7 @@ def test_remarks_travel_with_selects(bridge, datastream, run_bridge):
     with pytest.raises(bridge.BridgeError, match="string"):
         bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": 1}])
     with pytest.raises(bridge.BridgeError, match="at most"):
-        bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": "x" * 1001}])
+        bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": "x" * 4001}])
     assert bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": "  "}]) == [
         {"idref": RULE_AUDIT, "action": "unselect"}]
     info = run_bridge("create-tailoring", PROFILE_BASE, json.dumps(mods[:1]))
@@ -91,7 +91,7 @@ def test_selected_accepts_every_xml_boolean(bridge, datastream):
 
 
 def test_text_destined_for_xml_is_checked_before_anything_is_written(bridge, run_bridge):
-    for bad in ("handled\x08elsewhere", "a\x00b", "\x1f"):
+    for bad in ("handled\x08elsewhere", "a\x00b", "\x1f", "lone \ud800 surrogate"):
         with pytest.raises(bridge.BridgeError, match="control characters"):
             bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": bad}])
         with pytest.raises(bridge.BridgeError, match="control characters"):
@@ -138,10 +138,50 @@ def test_tailor_rule_edits_one_rule_of_the_customization(run_bridge, bridge):
                             expect_rc=1)
     assert "profile not found" in no_profile["error"]
     assert "invalid rule id" in run_bridge("tailor-rule", PROFILE_BASE, "bad id", "disable", expect_rc=1)["error"]
+    # a justification that looks like an option is still just text
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "--datastream")
+    assert info["modifications"][1] == {"idref": RULE_ROOT_LOGIN, "action": "unselect", "remark": "--datastream"}
     # a customization that cannot be applied is not silently replaced
     bridge.Path(info["path"]).write_text("<nope/>")
     broken = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", expect_rc=1)
     assert "cannot be changed" in broken["error"]
+
+
+def test_tailor_rule_keeps_what_the_editor_does_not_model(run_bridge, bridge, datastream):
+    # a file from another tool: its own ids, a severity override and a second profile
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<xccdf:Tailoring xmlns:xccdf="{NS}" id="xccdf_org.example_tailoring_site">
+  <xccdf:benchmark href="{datastream}"/>
+  <xccdf:version time="2020-01-01T00:00:00">3</xccdf:version>
+  <xccdf:Profile id="xccdf_org.example_profile_site" extends="{PROFILE_BASE}">
+    <xccdf:title>Site profile</xccdf:title>
+    <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="false"><xccdf:remark>old reason</xccdf:remark></xccdf:select>
+    <xccdf:refine-rule idref="{RULE_AUDIT}" severity="high"/>
+  </xccdf:Profile>
+  <xccdf:Profile id="xccdf_org.example_profile_other" extends="{PROFILE_BASE}">
+    <xccdf:title>Other</xccdf:title>
+  </xccdf:Profile>
+</xccdf:Tailoring>
+"""
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "new reason")
+    root = ET.fromstring(bridge.Path(info["path"]).read_text())  # noqa: S314
+    assert root.get("id") == "xccdf_org.example_tailoring_site"
+    profiles = root.findall(f"{{{NS}}}Profile")
+    assert [p.get("id") for p in profiles] == ["xccdf_org.example_profile_site", "xccdf_org.example_profile_other"]
+    assert profiles[0].find(f"{{{NS}}}refine-rule") is not None
+    selects = profiles[0].findall(f"{{{NS}}}select")
+    assert [(s.get("idref"), s.get("selected"), [r.text for r in s]) for s in selects] == [
+        (RULE_ROOT_LOGIN, "false", ["new reason"])]
+    version = root.find(f"{{{NS}}}version")
+    assert version is not None
+    assert version.text == "3"
+    assert version.get("time") != "2020-01-01T00:00:00"
+    assert info["profile_id"] == "xccdf_org.example_profile_site"
+    assert info["modifications"] == [{"idref": RULE_ROOT_LOGIN, "action": "unselect", "remark": "new reason"}]
+    # the datastream a result names may be gone; the customization applies to the installed content
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable", "--datastream", "/nonexistent/ds.xml")
+    assert [m["idref"] for m in info["modifications"]] == [RULE_ROOT_LOGIN, RULE_AUDIT]
 
 
 def test_parse_round_trip(bridge, datastream):

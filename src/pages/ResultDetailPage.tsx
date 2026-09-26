@@ -649,7 +649,9 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                 datastream={loaded.datastream || app.backend.content.datastream_path}
                                                 {...canRemediate && normalizeResult(rule.result) === "fail" &&
                                                     { onRemediate: () => remediateRules([rule.rule_id]) }}
-                                                {...canExclude && ["fail", "error"].includes(normalizeResult(rule.result)) &&
+                                                excluded={loaded.currently_excluded.includes(rule.rule_id)}
+                                                {...canExclude && !loaded.currently_excluded.includes(rule.rule_id) &&
+                                                    ["fail", "error"].includes(normalizeResult(rule.result)) &&
                                                     { onExclude: () => excludeRule(rule) }}
                                             />
                                         )
