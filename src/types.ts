@@ -75,6 +75,8 @@ export interface ProfileInfo {
     extends: string | null;
     tailoring_path: string | null;
     tailored_profile_id: string | null;
+    /** Why the registered customization is not applied ("" when it is, or there is none). */
+    tailoring_problem: string;
 }
 
 export type Severity = "high" | "medium" | "low" | "unknown";

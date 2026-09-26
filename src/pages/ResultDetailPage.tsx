@@ -5,7 +5,7 @@
  * the entry point to guided remediation.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
@@ -83,14 +83,8 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
 }
 
 /** The most recent completed scan of the same profile that ran before `result`, if any. */
-async function findPrevious(result: ScanResult): Promise<ScanResult | null> {
+async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Promise<ScanResult | null> {
     const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
-    let summaries: ResultSummary[];
-    try {
-        summaries = await listResults();
-    } catch {
-        return null;
-    }
     // newest first, so the first older match is the immediately preceding scan
     const before = summaries.find(s => s.id !== result.id && s.profile_id === result.profile_id &&
         s.status === "complete" && (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at);
@@ -107,8 +101,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const result = await getResult(resultId);
-        return { result, previous: await findPrevious(result) };
+        const [result, summaries] = await Promise.all([
+            getResult(resultId),
+            listResults().catch((): ResultSummary[] => []),
+        ]);
+        return { result, previous: await findPrevious(result, summaries) };
     }, [resultId, app.version]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
@@ -126,6 +123,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     }, [result]);
     const previousResults = useMemo(
         () => new Map((previous?.results ?? []).map(r => [r.rule_id, r.result])), [previous]);
+    // the comparison filter only makes sense while there is something to compare with
+    useEffect(() => {
+        if (!previous && status === "changed")
+            setStatus("all");
+    }, [previous, status]);
 
     if (data.loading && !result)
         return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;

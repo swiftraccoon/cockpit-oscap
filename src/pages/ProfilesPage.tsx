@@ -12,6 +12,7 @@ import { Content } from "@patternfly/react-core/dist/esm/components/Content/inde
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
 import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
+import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
 import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
 import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
 import { Gallery } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.js";
@@ -203,7 +204,12 @@ key={profile.id} id={`profile-${safeFilename(short)}`}
                                         <CardTitle>
                                             <span>{profile.title}</span>
                                             {isActive && <Label status="info" isCompact>{_("Active")}</Label>}
-                                            {profile.tailoring_path && <TailoredLabel />}
+                                            {profile.tailored_profile_id && <TailoredLabel />}
+                                            {profile.tailoring_problem && (
+                                                <Tooltip content={profile.tailoring_problem}>
+                                                    <Label status="warning" isCompact>{_("Customization not applied")}</Label>
+                                                </Tooltip>
+                                            )}
                                         </CardTitle>
                                         <CardBody>
                                             <Stack hasGutter>

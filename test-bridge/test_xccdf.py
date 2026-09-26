@@ -145,17 +145,29 @@ def test_cli_list_profiles_and_rules(run_bridge, datastream):
     assert "error" in run_bridge("rule-info", expect_rc=1)
 
 
-def test_list_profiles_ignores_tailoring_for_other_content(bridge, datastream):
+def test_list_profiles_reports_unusable_tailoring(bridge, datastream):
     mods = [{"idref": RULE_AUDIT, "action": "unselect"}]
-    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
+    _profile_id, xml = bridge.build_tailoring_xml("xccdf_org.test.content_profile_missing", "Gone", mods,
                                                   "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
-    path = bridge.TAILORING_DIR / "rhel9.xml"
+    path = bridge.TAILORING_DIR / "gone.xml"
     bridge._atomic_write(path, xml)
     broken = bridge.TAILORING_DIR / "broken.xml"
     bridge._atomic_write(broken, "<nope/>")
     profiles = bridge.list_profiles(datastream, {"tailorings": {PROFILE_BASE: str(path),
                                                               PROFILE_EXTENDED: str(broken)}})
     by_id = {p["id"]: p for p in profiles}
-    assert by_id[PROFILE_BASE]["tailoring_path"] is None
+    # the file is still reported (so it can be removed), but it is not applied
+    assert by_id[PROFILE_BASE]["tailoring_path"] == str(path)
     assert by_id[PROFILE_BASE]["tailored_profile_id"] is None
-    assert by_id[PROFILE_EXTENDED]["tailoring_path"] is None
+    assert "not part of ssg-test-ds.xml" in by_id[PROFILE_BASE]["tailoring_problem"]
+    assert by_id[PROFILE_EXTENDED]["tailoring_path"] == str(broken)
+    assert by_id[PROFILE_EXTENDED]["tailored_profile_id"] is None
+    assert "cannot be read" in by_id[PROFILE_EXTENDED]["tailoring_problem"]
+
+    # a tailoring from another SSG product with the same profile ids applies as usual
+    profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
+                                                 "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    bridge._atomic_write(path, xml)
+    by_id = {p["id"]: p for p in bridge.list_profiles(datastream, {"tailorings": {PROFILE_BASE: str(path)}})}
+    assert by_id[PROFILE_BASE]["tailored_profile_id"] == profile_id
+    assert by_id[PROFILE_BASE]["tailoring_problem"] == ""

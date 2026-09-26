@@ -31,6 +31,8 @@ import type { BackendInfo } from "./types";
 
 const _ = cockpit.gettext;
 
+const RELOAD_COALESCE_MS = 150;
+
 export interface AppContextValue {
     backend: BackendInfo;
     reloadBackend: () => void;
@@ -84,7 +86,17 @@ const AppShell = () => {
     const superuserAllowed = useSuperuser();
     const scanState = useScanState();
     const [version, setVersion] = useState(0);
-    const bump = useCallback(() => setVersion(v => v + 1), []);
+    // Reload everything. Calls within a short window collapse into one reload: a finished scan
+    // is reported both by the dialog that ran it and by the scan-state file watch.
+    const bumpTimer = useRef<number | null>(null);
+    const bump = useCallback(() => {
+        if (bumpTimer.current !== null)
+            window.clearTimeout(bumpTimer.current);
+        bumpTimer.current = window.setTimeout(() => {
+            bumpTimer.current = null;
+            setVersion(v => v + 1);
+        }, RELOAD_COALESCE_MS);
+    }, []);
 
     const scanning = Boolean(scanState?.running);
 
@@ -105,8 +117,8 @@ const AppShell = () => {
     const runScan = useCallback((profileId?: string) => {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} />);
-    }, [Dialogs]);
+        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} onFinished={bump} />);
+    }, [Dialogs, bump]);
 
     const info = backend.data;
     const context = useMemo<AppContextValue | null>(() => info

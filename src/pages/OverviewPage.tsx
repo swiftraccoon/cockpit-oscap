@@ -184,7 +184,7 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
                                             <StackItem>
                                                 <div className="oscap-inline-list">
                                                     <strong>{activeProfile.title}</strong>
-                                                    {activeProfile.tailoring_path && <TailoredLabel />}
+                                                    {activeProfile.tailored_profile_id && <TailoredLabel />}
                                                 </div>
                                             </StackItem>
                                             <StackItem>

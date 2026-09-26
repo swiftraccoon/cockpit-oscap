@@ -30,7 +30,7 @@ import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 
-import { createTailoring, deleteTailoring, getConfig, importTailoring, parseTailoringFile, profileRules } from "../api";
+import { createTailoring, deleteTailoring, importTailoring, listProfiles, parseTailoringFile, profileRules } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -115,17 +115,13 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const [rules, config] = await Promise.all([profileRules(profileId), getConfig()]);
-        const path = config.tailorings?.[profileId];
-        let tailoring: TailoringInfo | null = null;
-        if (path) {
-            try {
-                tailoring = await parseTailoringFile(path);
-            } catch {
-                tailoring = null; // stale configuration entry; treat as no customizations
-            }
-        }
-        return { rules, tailoring };
+        const [rules, profiles] = await Promise.all([profileRules(profileId), listProfiles()]);
+        const info = profiles.find(p => p.id === profileId);
+        // only a customization the bridge will actually apply is loaded into the editor
+        const tailoring: TailoringInfo | null = info?.tailored_profile_id && info.tailoring_path
+            ? await parseTailoringFile(info.tailoring_path)
+            : null;
+        return { rules, tailoring, problem: info?.tailoring_problem ?? "" };
     }, [profileId]);
 
     const [tab, setTab] = useState<"rules" | "values">("rules");
@@ -158,6 +154,12 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
         setSaved(state);
         setCurrent(state);
         setTailoring(data.data.tailoring);
+        if (data.data.problem) {
+            setNotice({
+                variant: "warning",
+                title: cockpit.format(_("The saved customization is not applied. $0 Saving replaces it."), data.data.problem),
+            });
+        }
     }, [data.data, base, values]);
 
     if (data.error) {

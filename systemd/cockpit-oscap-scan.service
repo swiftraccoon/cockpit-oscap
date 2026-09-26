@@ -2,7 +2,6 @@
 Description=Cockpit OpenSCAP Compliance Scan
 Documentation=man:oscap(8) https://github.com/swiftraccoon/cockpit-oscap
 # scanning needs the SCAP content and the scanner installed
-ConditionPathExists=/usr/bin/oscap
 
 [Service]
 Type=oneshot

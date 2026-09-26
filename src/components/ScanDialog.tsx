@@ -124,7 +124,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
                             />
                             <FormHelper helperText={profile?.description} />
                         </FormGroup>
-                        {profile?.tailoring_path && (
+                        {profile?.tailored_profile_id && (
                             <FormGroup fieldId="scan-tailoring">
                                 <Checkbox
                                     id="scan-tailoring"

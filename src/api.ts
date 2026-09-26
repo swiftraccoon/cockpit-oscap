@@ -253,6 +253,8 @@ export interface ScanOptions {
     datastream?: string;
     tailoringPath?: string;
     noTailoring?: boolean;
+    /** Repeat an earlier scan: same profile, datastream and the tailoring recorded in its results. */
+    rescanOf?: string;
 }
 
 export function scan(options: ScanOptions, onProgress: (progress: ScanProgress) => void): StreamHandle<ScanResult> {
@@ -264,6 +266,8 @@ export function scan(options: ScanOptions, onProgress: (progress: ScanProgress) 
         args.push("--tailoring-path", options.tailoringPath);
     if (options.noTailoring)
         args.push("--no-tailoring");
+    if (options.rescanOf)
+        args.push("--rescan-of", options.rescanOf);
     args.push("--source", "interactive");
     return stream<ScanResult, ScanProgress>("scan", args, onProgress);
 }

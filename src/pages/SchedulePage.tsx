@@ -305,7 +305,7 @@ variant="success" isInline title={notice}
                                 <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
                                 <DescriptionListDescription>
                                     {activeProfile
-                                        ? <>{activeProfile.title}{activeProfile.tailoring_path && <> {" "}<TailoredLabel /></>}</>
+                                        ? <>{activeProfile.title}{activeProfile.tailored_profile_id && <> {" "}<TailoredLabel /></>}</>
                                         : <span className="oscap-muted">{_("No active profile")}</span>}
                                 </DescriptionListDescription>
                             </DescriptionListGroup>

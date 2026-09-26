@@ -111,11 +111,9 @@ export const RemediationDialog = ({ result, onRescanned }: {
     function verify() {
         setPhase("rescanning");
         setScanProgress(null);
-        // Re-evaluate exactly what was scanned: the same base profile and the same tailoring (if any)
-        const options = result.tailoring_path
-            ? { profileId: result.base_profile_id, tailoringPath: result.tailoring_path }
-            : { profileId: result.base_profile_id, noTailoring: true };
-        handle.current = scan(options, setScanProgress);
+        // Re-evaluate exactly what was scanned: the bridge reuses the profile, datastream and the
+        // tailoring recorded in the original results
+        handle.current = scan({ rescanOf: result.id }, setScanProgress);
         handle.current.promise
                 .then(scanResult => {
                     setRescan(scanResult);
