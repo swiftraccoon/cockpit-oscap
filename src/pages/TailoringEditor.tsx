@@ -47,7 +47,7 @@ import {
     baseState,
     computeModifications,
     describeModifications,
-    statesEqual,
+    optionLabel,
     withRemark,
     withRuleSelection,
 } from "../tailoring";
@@ -89,7 +89,11 @@ const ReviewChangesDialog = ({ changes, dialogResult }: {
                             title: (
                                 <>
                                     {change.change}
-                                    {change.remark && <div className="oscap-muted oscap-remark">{change.remark}</div>}
+                                    {change.remark && (
+                                        <div className={`oscap-muted oscap-remark${change.remarkRemoved ? " oscap-remark-removed" : ""}`}>
+                                            {change.remark}
+                                        </div>
+                                    )}
                                 </>
                             ),
                         },
@@ -102,6 +106,40 @@ const ReviewChangesDialog = ({ changes, dialogResult }: {
         </ModalFooter>
     </Modal>
 );
+
+const JustificationField = ({ id, value, enabled, readOnly, onCommit }: {
+    id: string;
+    value: string;
+    enabled: boolean;
+    readOnly: boolean;
+    onCommit: (text: string) => void;
+}) => {
+    const [draft, setDraft] = useState(value);
+    useEffect(() => setDraft(value), [value]);
+    const commit = () => { if (draft !== value) onCommit(draft); };
+    return (
+        <Form className="oscap-expanded-details oscap-remark-form" onSubmit={ev => { ev.preventDefault(); commit() }}>
+            <FormGroup label={_("Justification")} fieldId={id}>
+                <TextInput
+                    id={id}
+                    value={draft}
+                    isDisabled={readOnly}
+                    maxLength={1000}
+                    placeholder={enabled ? _("Why this rule is enabled here") : _("Why this rule is disabled here")}
+                    onChange={(_ev, text) => setDraft(text)}
+                    onBlur={commit}
+                />
+                <FormHelperText>
+                    <HelperText>
+                        <HelperTextItem>
+                            {_("Saved with the customization as an XCCDF remark, so auditors and SCAP Workbench see it too.")}
+                        </HelperTextItem>
+                    </HelperText>
+                </FormHelperText>
+            </FormGroup>
+        </Form>
+    );
+};
 
 export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const app = useApp();
@@ -169,14 +207,14 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const readOnly = app.superuser === false;
     const modifications = computeModifications(base, current, values);
     // what saving would change, as opposed to every customization of the profile
-    const pending = computeModifications(saved, current, values);
+    const pending = computeModifications(saved, current, values, base);
     const changedRules = modifications.filter(m => m.action === "select" || m.action === "unselect").length;
     const changedValues = modifications.length - changedRules;
-    const unsaved = !statesEqual(current, saved);
+    const unsaved = pending.length > 0;
     const selectedCount = Object.values(current.selection).filter(Boolean).length;
 
     function setRules(ids: string[], selected: boolean) {
-        setCurrent(prev => prev && withRuleSelection(prev, base, ids, selected));
+        setCurrent(prev => prev && withRuleSelection(prev, ids, selected));
     }
 
     function setRemark(id: string, remark: string) {
@@ -210,8 +248,11 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
                 setNotice({ variant: "info", title: _("No customizations left; scans will use the profile defaults.") });
             } else {
                 const info = await createTailoring(profileId, modifications);
+                // what the bridge kept (remarks come back with their whitespace collapsed)
+                const state = applyModifications(base, values, info.modifications);
                 setTailoring(info);
-                setSaved(current);
+                setSaved(state);
+                setCurrent(state);
                 setNotice({ variant: "success", title: _("Customizations saved. Scans of this profile now apply them.") });
             }
             app.bump();
@@ -404,7 +445,8 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                     rows={shownRules.map(rule => {
                         const selected = current.selection[rule.id];
                         const changed = base.selection[rule.id] !== selected;
-                        const remark = current.remarks[rule.id] ?? "";
+                        // a justification only means something while the rule differs from the profile
+                        const remark = changed ? (current.remarks[rule.id] ?? "") : "";
                         const remarkId = `remark-${safeFilename(ruleShortName(rule.id))}`;
                         return {
                             props: { key: rule.id, ...changed && { className: "oscap-row-changed" } },
@@ -438,30 +480,10 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                 ? (
                                     <>
                                         {changed && (
-                                            <Form
-                                                className="oscap-expanded-details oscap-remark-form"
-                                                onSubmit={ev => ev.preventDefault()}
-                                            >
-                                                <FormGroup label={_("Justification")} fieldId={remarkId}>
-                                                    <TextInput
-                                                        id={remarkId}
-                                                        value={remark}
-                                                        isDisabled={readOnly}
-                                                        maxLength={1000}
-                                                        placeholder={selected
-                                                            ? _("Why this rule is enabled here")
-                                                            : _("Why this rule is disabled here")}
-                                                        onChange={(_ev, text) => setRemark(rule.id, text)}
-                                                    />
-                                                    <FormHelperText>
-                                                        <HelperText>
-                                                            <HelperTextItem>
-                                                                {_("Saved with the customization as an XCCDF remark, so auditors and SCAP Workbench see it too.")}
-                                                            </HelperTextItem>
-                                                        </HelperText>
-                                                    </FormHelperText>
-                                                </FormGroup>
-                                            </Form>
+                                            <JustificationField
+                                                id={remarkId} value={remark} enabled={selected} readOnly={readOnly}
+                                                onCommit={text => setRemark(rule.id, text)}
+                                            />
                                         )}
                                         <RuleDetails
                                             ruleId={rule.id} description={rule.description}
@@ -530,7 +552,7 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                                 {value.options.map(option => (
                                                     <FormSelectOption
 key={option.selector} value={option.selector}
-                                                                      label={`${option.selector.replace(/_/g, " ")} (${option.value})`}
+                                                                      label={optionLabel(option)}
                                                     />
                                                 ))}
                                                 <FormSelectOption value={CUSTOM} label={_("Custom value…")} />

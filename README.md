@@ -51,8 +51,10 @@ scheduled scans.
   with the previous scan of the same profile (new failures, rules now passing).
   Every scan offers its HTML report, ARF results, a CSV of its rule results,
   and the remediation for its failed rules as a Bash script or an Ansible
-  playbook. Results can be deleted one at a time or in bulk, and a link can
-  point at one rule of one scan.
+  playbook. A failed rule that does not apply can be excluded from the profile
+  right there, with a justification; later scans list the excluded rules with
+  their justifications next to the score. Results can be deleted one at a time
+  or in bulk, and a link can point at one rule of one scan.
 - **Guided remediation** – review the bash fix generated for each failed rule,
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),

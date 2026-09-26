@@ -8,7 +8,7 @@
 import cockpit from "cockpit";
 
 import { ruleShortName } from "./helpers";
-import type { RuleInfo, TailoringModification, ValueInfo } from "./types";
+import type { RuleInfo, TailoringModification, ValueInfo, ValueOption } from "./types";
 
 const _ = cockpit.gettext;
 
@@ -17,7 +17,11 @@ export interface EditorState {
     selection: Record<string, boolean>;
     /** Value id → its text. */
     values: Record<string, string>;
-    /** Rule id → why it was enabled or disabled (only for rules whose selection differs from the profile). */
+    /**
+     * Rule id → why it was enabled or disabled. Only meaningful (and saved) for rules whose selection
+     * differs from the profile's; a rule toggled back to its default keeps the text so that toggling
+     * it again restores the justification.
+     */
     remarks: Record<string, string>;
 }
 
@@ -26,6 +30,13 @@ export interface ChangeDescription {
     item: string;
     change: string;
     remark: string;
+    /** The remark is the one being dropped, not a new one. */
+    remarkRemoved: boolean;
+}
+
+/** How a value option is named everywhere: "5 minutes (300)". */
+export function optionLabel(option: ValueOption): string {
+    return `${option.selector.replace(/_/g, " ")} (${option.value || _("empty")})`;
 }
 
 /** The editor state for the profile as the content defines it. */
@@ -36,19 +47,23 @@ export function baseState(rules: RuleInfo[], values: ValueInfo[]): EditorState {
     return state;
 }
 
-/** The state with a tailoring file's modifications applied; unknown rules and values are ignored. */
+/**
+ * The state with a tailoring file's modifications applied; unknown rules and values are ignored, and
+ * so is a remark on a select that does not change the rule (nothing in the editor could show it).
+ */
 export function applyModifications(base: EditorState, values: ValueInfo[], mods: TailoringModification[]): EditorState {
     const state: EditorState = { selection: { ...base.selection }, values: { ...base.values }, remarks: { ...base.remarks } };
     const valuesById = new Map(values.map(v => [v.id, v]));
     for (const mod of mods) {
         if (mod.action === "select" || mod.action === "unselect") {
-            if (mod.idref in state.selection) {
-                state.selection[mod.idref] = mod.action === "select";
-                if (mod.remark)
-                    state.remarks[mod.idref] = mod.remark;
-                else
-                    delete state.remarks[mod.idref];
-            }
+            if (!(mod.idref in state.selection))
+                continue;
+            const selected = mod.action === "select";
+            state.selection[mod.idref] = selected;
+            if (mod.remark && base.selection[mod.idref] !== selected)
+                state.remarks[mod.idref] = mod.remark;
+            else
+                delete state.remarks[mod.idref];
         } else if (mod.action === "refine-value") {
             const option = valuesById.get(mod.idref)?.options.find(o => o.selector === mod.selector);
             if (option)
@@ -60,15 +75,23 @@ export function applyModifications(base: EditorState, values: ValueInfo[], mods:
     return state;
 }
 
+/** The remark that counts for a rule: none while the rule sits at the profile default. */
+function effectiveRemark(state: EditorState, profile: EditorState, id: string): string {
+    return state.selection[id] === profile.selection[id] ? "" : (state.remarks[id] ?? "").trim();
+}
+
 /**
  * The modifications that turn `base` into `current`: a select or unselect per rule whose selection or
- * remark differs, a refine-value where the text is one of the content's options, else a set-value.
+ * justification differs, a refine-value where the text is one of the content's options, else a
+ * set-value. `profile` is the state the content defines, which decides whether a justification counts;
+ * it is `base` itself when computing what to save.
  */
-export function computeModifications(base: EditorState, current: EditorState, values: ValueInfo[]): TailoringModification[] {
+export function computeModifications(base: EditorState, current: EditorState, values: ValueInfo[],
+    profile: EditorState = base): TailoringModification[] {
     const mods: TailoringModification[] = [];
     for (const [id, selected] of Object.entries(current.selection)) {
-        const remark = (current.remarks[id] ?? "").trim();
-        if (base.selection[id] !== selected || (base.remarks[id] ?? "") !== remark)
+        const remark = effectiveRemark(current, profile, id);
+        if (base.selection[id] !== selected || effectiveRemark(base, profile, id) !== remark)
             mods.push({ idref: id, action: selected ? "select" : "unselect", ...remark && { remark } });
     }
     for (const value of values) {
@@ -83,19 +106,14 @@ export function computeModifications(base: EditorState, current: EditorState, va
     return mods;
 }
 
-/** The state with one rule enabled or disabled; a rule back at its profile default loses its remark. */
-export function withRuleSelection(state: EditorState, base: EditorState, ids: string[], selected: boolean): EditorState {
+/** The state with rules enabled or disabled; their justifications stay for when they are toggled back. */
+export function withRuleSelection(state: EditorState, ids: string[], selected: boolean): EditorState {
     const selection = { ...state.selection };
-    const remarks = { ...state.remarks };
-    for (const id of ids) {
-        selection[id] = selected;
-        if (base.selection[id] === selected)
-            delete remarks[id];
-    }
-    return { ...state, selection, remarks };
+    ids.forEach(id => { selection[id] = selected });
+    return { ...state, selection };
 }
 
-/** The state with one rule's remark replaced (removed when blank). */
+/** The state with one rule's justification replaced (removed when blank). */
 export function withRemark(state: EditorState, id: string, remark: string): EditorState {
     const remarks = { ...state.remarks };
     if (remark.trim())
@@ -103,14 +121,6 @@ export function withRemark(state: EditorState, id: string, remark: string): Edit
     else
         delete remarks[id];
     return { ...state, remarks };
-}
-
-export function statesEqual(a: EditorState | null, b: EditorState | null): boolean {
-    if (!a || !b)
-        return a === b;
-    return JSON.stringify(a.selection) === JSON.stringify(b.selection) &&
-        JSON.stringify(a.values) === JSON.stringify(b.values) &&
-        JSON.stringify(a.remarks) === JSON.stringify(b.remarks);
 }
 
 /**
@@ -121,7 +131,7 @@ export function describeValue(value: ValueInfo | undefined, text: string, select
     const candidates = value?.options.filter(o => o.value === text) ?? [];
     const option = selector ? candidates.find(o => o.selector === selector) : candidates.length === 1 ? candidates[0] : undefined;
     if (option)
-        return `${option.selector.replace(/_/g, " ")} (${text || _("empty")})`;
+        return optionLabel(option);
     return text === "" ? _("(empty)") : JSON.stringify(text);
 }
 
@@ -133,15 +143,19 @@ export function describeModifications(mods: TailoringModification[], rules: Rule
     return mods.map(mod => {
         if (mod.action === "select" || mod.action === "unselect") {
             const enabled = mod.action === "select";
+            const item = ruleTitle.get(mod.idref) ?? mod.idref;
             const remark = mod.remark ?? "";
-            let change: string;
             if (base.selection[mod.idref] !== enabled)
-                change = enabled ? _("Rule enabled") : _("Rule disabled");
-            else if (remark)
-                change = _("Justification changed");
-            else
-                change = _("Justification removed");
-            return { key: mod.idref, item: ruleTitle.get(mod.idref) ?? mod.idref, change, remark };
+                return { key: mod.idref, item, change: enabled ? _("Rule enabled") : _("Rule disabled"), remark, remarkRemoved: false };
+            if (remark)
+                return { key: mod.idref, item, change: _("Justification changed"), remark, remarkRemoved: false };
+            return {
+                key: mod.idref,
+                item,
+                change: _("Justification removed"),
+                remark: (base.remarks[mod.idref] ?? "").trim(),
+                remarkRemoved: true,
+            };
         }
         const value = valuesById.get(mod.idref);
         const before = base.values[mod.idref] ?? "";
@@ -153,6 +167,7 @@ export function describeModifications(mods: TailoringModification[], rules: Rule
                                    describeValue(value, before, value && before === value.value ? value.selector : undefined),
                                    describeValue(value, current.values[mod.idref] ?? "", mod.selector)),
             remark: "",
+            remarkRemoved: false,
         };
     });
 }

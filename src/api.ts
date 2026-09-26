@@ -319,6 +319,11 @@ export const importTailoring = (baseProfileId: string, xml: string) =>
 export const deleteTailoring = (baseProfileId: string) =>
     run<{ deleted: boolean; profile_id: string }>("delete-tailoring", [baseProfileId]);
 
+/** Enable or disable one rule in the profile's customization, keeping the rest; `remark` is the justification. */
+export const tailorRule = (baseProfileId: string, ruleId: string, enabled: boolean, remark: string, datastream?: string) =>
+    run<TailoringInfo>("tailor-rule", [baseProfileId, ruleId, enabled ? "enable" : "disable",
+        ...remark ? ["--remark", remark] : [], ...datastreamArgs(datastream)]);
+
 // ---------------------------------------------------------------------------
 // Scheduled scans
 // ---------------------------------------------------------------------------

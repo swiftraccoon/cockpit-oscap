@@ -97,7 +97,7 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate }: {
+export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate, onExclude }: {
     ruleId: string;
     /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
     datastream?: string | undefined;
@@ -107,6 +107,8 @@ export const RuleDetails = ({ ruleId, datastream, message, description, onRemedi
     description?: string;
     /** Offered next to the remediation info when the rule ships an automated fix. */
     onRemediate?: () => void;
+    /** Offered when the rule can be excluded from its profile's customization (with a justification). */
+    onExclude?: () => void;
 }) => {
     // Callers mount this only for expanded rows, so the fetch happens on first expansion.
     const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
@@ -179,6 +181,19 @@ id={`remediate-${ruleId}`} variant="secondary" size="sm"
                                         {_("Remediate this rule")}
                                     </Button>
                                 )}
+                            </span>
+                        </DescriptionListDescription>
+                    </DescriptionListGroup>
+                )}
+                {onExclude && (
+                    <DescriptionListGroup>
+                        <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
+                        <DescriptionListDescription>
+                            <span className="oscap-inline-list">
+                                {_("Enabled in this profile")}
+                                <Button id={`exclude-${ruleId}`} variant="link" isInline onClick={onExclude}>
+                                    {_("Exclude from profile…")}
+                                </Button>
                             </span>
                         </DescriptionListDescription>
                     </DescriptionListGroup>

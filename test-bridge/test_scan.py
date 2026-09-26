@@ -15,6 +15,7 @@ from conftest import (
     BRIDGE_PATH,
     PROFILE_BASE,
     RULE_AUDIT,
+    RULE_NEVER,
     RULE_ROOT_LOGIN,
     RULE_TIMEOUT,
     SYNTHETIC_ARF,
@@ -105,6 +106,37 @@ def test_list_results_sorted_newest_first(bridge):
     assert summaries[0]["tailored"] is True
     assert summaries[0]["total"] == 2
     assert summaries[0]["has_arf"] is False
+
+
+def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
+    tailoring = f"""
+        <xccdf:Tailoring id="t">
+          <xccdf:Profile id="{PROFILE_BASE}_customized" extends="{PROFILE_BASE}">
+            <xccdf:select idref="{RULE_NEVER}" selected="false">
+              <xccdf:remark>Not applicable: no such service</xccdf:remark>
+              <xccdf:remark>ticket 42</xccdf:remark>
+            </xccdf:select>
+            <xccdf:select idref="{RULE_NEVER}" selected="false"/>
+            <xccdf:select idref="{RULE_AUDIT}" selected="false">
+              <xccdf:remark>still evaluated</xccdf:remark>
+            </xccdf:select>
+            <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="1"/>
+          </xccdf:Profile>
+        </xccdf:Tailoring>
+        <arf:report id="xccdf1">"""
+    arf = tmp_path / "tailored.arf.xml"
+    arf.write_text(SYNTHETIC_ARF.replace('<arf:report id="xccdf1">', tailoring, 1))
+    parsed = bridge.parse_arf(str(arf))
+    # only rules the scan really skipped count, once each, and remarks travel along
+    assert parsed["exclusions"] == [
+        {"rule_id": RULE_NEVER, "title": "Never selected", "remark": "Not applicable: no such service ticket 42"}]
+    assert [r["rule_id"] for r in parsed["results"]][:2] == [RULE_AUDIT, RULE_ROOT_LOGIN]
+    # stored results from before this field carry none; a malformed field is ignored
+    _write_result(bridge, "2026-04-08T025531-base")
+    assert bridge._load_result("2026-04-08T025531-base")["exclusions"] == []
+    _write_result(bridge, "2026-04-08T025532-base", exclusions=[{"rule_id": RULE_NEVER, "remark": "why"}, "junk", {}])
+    loaded = bridge._load_result("2026-04-08T025532-base")
+    assert loaded["exclusions"] == [{"rule_id": RULE_NEVER, "title": "", "remark": "why"}]
 
 
 def test_prune_results_keeps_newest(bridge):

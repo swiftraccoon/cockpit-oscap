@@ -122,6 +122,17 @@ class TestOscap(testlib.MachineCase):
         b.wait_visible("#result-rules")
         b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
 
+        # a failed rule can be excluded from the profile with a justification, which the
+        # customization keeps as an XCCDF remark
+        b.click("#result-rules tr:not([hidden]) button[id^='exclude-']")
+        b.wait_visible("#exclude-rule-dialog")
+        b.wait_visible("#exclude-rule-confirm[disabled]")
+        b.set_input_text("#exclude-rule-remark", "Not applicable on this host")
+        b.click("#exclude-rule-confirm")
+        b.wait_visible("#result-excluded-notice")
+        self.machine.execute("grep -q '<xccdf:remark>Not applicable on this host</xccdf:remark>' "
+                             "/var/lib/cockpit-oscap/tailoring/*.xml")
+
     def testProfileEditor(self) -> None:
         b = self.browser
 

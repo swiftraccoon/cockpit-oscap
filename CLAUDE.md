@@ -68,7 +68,7 @@ make codecheck            # Static analysis via test/common/static-code
 Commands (argv[1]): `detect-backend`, `get-config`, `set-config`, `list-profiles`,
 `profile-rules`, `rule-info`, `scan`, `list-results`, `get-result`, `delete-result`,
 `generate-report`, `generate-fix`, `remediate`, `list-remediations`, `create-tailoring`,
-`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `manage-timer`, `validate-calendar`.
+`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `tailor-rule`, `manage-timer`, `validate-calendar`.
 
 Every command prints one JSON document; errors are `{"error": "..."}` with exit
 status 1 (raised as `BridgeError` internally). `scan` and `remediate` stream
@@ -82,7 +82,10 @@ detected from `/etc/os-release` (config override first).
 Tailoring writes XCCDF 1.2 files with `<base profile id>_customized` profiles, which
 scans use automatically. A select/unselect modification may carry a `remark` (the
 justification, written as an XCCDF `<remark>` on the `<select>` and read back from
-other tools' files too). A registered tailoring is applied only when oscap could
+other tools' files too); `tailor-rule <profile> <rule> enable|disable [--remark]`
+changes one rule of the registered customization and is what "Exclude from
+profile" on a result uses. `parse_arf` records the rules the embedded tailoring
+disabled, with their remarks, as the result's `exclusions`. A registered tailoring is applied only when oscap could
 evaluate it (its base profile exists in the content); otherwise `list-profiles`
 reports it with a `tailoring_problem` so the UI can explain and remove it. A
 different SSG product name in the tailoring's benchmark href is only a note (rule

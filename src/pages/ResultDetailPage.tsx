@@ -7,6 +7,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
+import { Alert, AlertActionCloseButton, AlertActionLink } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Card, CardBody, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
 import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
@@ -32,6 +33,7 @@ import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ExcludeRuleDialog } from "../components/ExcludeRuleDialog";
 import { RemediationDialog } from "../components/RemediationDialog";
 import { RuleDetails } from "../components/RuleDetails";
 import {
@@ -57,12 +59,13 @@ import {
     parseTimestamp,
     resultLabel,
     ruleChange,
+    ruleShortName,
     safeFilename,
     sameContent,
     scoredTotal,
     severityLabel,
 } from "../helpers";
-import type { RemediationRun, ResultSummary, RuleResultItem, ScanResult } from "../types";
+import type { RemediationRun, ResultSummary, RuleExclusion, RuleResultItem, ScanResult } from "../types";
 import { downloadArf, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
@@ -165,6 +168,34 @@ const RemediationHistory = ({ runs, readOnly, onError }: {
     );
 };
 
+/** The rules the customization left out of this scan, each with the justification recorded for it. */
+const ExcludedRules = ({ exclusions }: { exclusions: RuleExclusion[] }) => (
+    <Card id="result-exclusions" isPlain isCompact>
+        <CardTitle component="h2">
+            {cockpit.format(cockpit.ngettext("$0 rule excluded by the customization", "$0 rules excluded by the customization",
+                                             exclusions.length), exclusions.length)}
+        </CardTitle>
+        <CardBody>
+            <ListingTable
+                aria-label={_("Excluded rules")}
+                variant="compact"
+                columns={[{ title: _("Rule"), props: { width: 40 } }, { title: _("Justification") }]}
+                rows={exclusions.map(exclusion => ({
+                    props: { key: exclusion.rule_id },
+                    columns: [
+                        exclusion.title || ruleShortName(exclusion.rule_id),
+                        {
+                            title: exclusion.remark
+                                ? exclusion.remark
+                                : <span className="oscap-muted">{_("No justification recorded")}</span>,
+                        },
+                    ],
+                }))}
+            />
+        </CardBody>
+    </Card>
+);
+
 export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
@@ -184,6 +215,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const [severity, setSeverity] = useState("all");
     const [group, setGroup] = useState("all");
     const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<React.ReactNode>(null);
     const [expandedRules, setExpandedRules] = useState<RowRecord>({});
 
     const result = data.data?.result ?? null;
@@ -241,6 +273,8 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const changedTotal = changes.fixed + changes.regressed + changes.changed;
     const readOnly = app.superuser === false;
     const canRemediate = loaded.counts.fail > 0 && Boolean(loaded.arf_path) && !readOnly && !app.scanning;
+    // excluding a rule edits the profile's customization, which the next scan applies
+    const canExclude = !readOnly && !app.scanning;
 
     async function guarded(action: () => Promise<void>) {
         setError(null);
@@ -265,6 +299,39 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
                 cockpit.location.go(["results"]);
             });
         }
+    }
+
+    async function excludeRule(rule: RuleResultItem) {
+        if (Dialogs.isActive())
+            return;
+        const excluded = await Dialogs.run(ExcludeRuleDialog, {
+            baseProfileId: loaded.base_profile_id,
+            profileTitle: loaded.profile_title,
+            ruleId: rule.rule_id,
+            ruleTitle: rule.title,
+            ...loaded.datastream && { datastream: loaded.datastream },
+        });
+        if (!excluded)
+            return;
+        setNotice(
+            <Alert
+                component="h2" variant="success" isInline id="result-excluded-notice"
+                title={cockpit.format(_("$0 is now excluded from $1."), rule.title || rule.rule_id,
+                                      loaded.profile_title || loaded.base_profile_id)}
+                actionClose={<AlertActionCloseButton onClose={() => setNotice(null)} />}
+                actionLinks={
+                    <>
+                        <AlertActionLink onClick={() => app.runScan(loaded.base_profile_id)}>{_("Scan again")}</AlertActionLink>
+                        <AlertActionLink onClick={() => cockpit.location.go(["profiles", loaded.base_profile_id])}>
+                            {_("Open the customization")}
+                        </AlertActionLink>
+                    </>
+                }
+            >
+                {_("The next scan of the profile skips the rule; its justification is kept with the customization.")}
+            </Alert>
+        );
+        app.bump();
     }
 
     function remediateRules(ruleIds?: string[]) {
@@ -458,9 +525,15 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                             </CardBody>
                         </Card>
                     </StackItem>
+                    {notice && <StackItem>{notice}</StackItem>}
                     {remediations.length > 0 && (
                         <StackItem>
                             <RemediationHistory runs={remediations} readOnly={readOnly} onError={setError} />
+                        </StackItem>
+                    )}
+                    {loaded.exclusions.length > 0 && (
+                        <StackItem>
+                            <ExcludedRules exclusions={loaded.exclusions} />
                         </StackItem>
                     )}
                     {result.status === "interrupted" && (
@@ -576,6 +649,8 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                 datastream={loaded.datastream || app.backend.content.datastream_path}
                                                 {...canRemediate && normalizeResult(rule.result) === "fail" &&
                                                     { onRemediate: () => remediateRules([rule.rule_id]) }}
+                                                {...canExclude && ["fail", "error"].includes(normalizeResult(rule.result)) &&
+                                                    { onExclude: () => excludeRule(rule) }}
                                             />
                                         )
                                         : <span />,

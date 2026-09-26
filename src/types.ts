@@ -171,6 +171,13 @@ export interface RuleResultItem {
     message: string;
 }
 
+/** A rule the customization disabled for a scan, with the justification recorded with it. */
+export interface RuleExclusion {
+    rule_id: string;
+    title: string;
+    remark: string;
+}
+
 export type ScanStatus = "complete" | "interrupted" | string;
 
 export interface ScanResult {
@@ -192,6 +199,7 @@ export interface ScanResult {
     xccdf_score: number | null;
     counts: ResultCounts;
     results: RuleResultItem[];
+    exclusions: RuleExclusion[];
     arf_path: string;
     json_path: string;
 }

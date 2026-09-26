@@ -78,6 +78,72 @@ def test_remarks_travel_with_selects(bridge, datastream, run_bridge):
     assert info["modifications"][0]["remark"] == "Audit is handled by the SIEM agent"
 
 
+def test_selected_accepts_every_xml_boolean(bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base", bridge._validate_modifications([
+        {"idref": RULE_AUDIT, "action": "unselect"}, {"idref": RULE_ROOT_LOGIN, "action": "select"}]), datastream)
+    # another tool's file: xs:boolean allows 1 and 0 as well
+    xml = xml.replace('selected="false"', 'selected="0"').replace('selected="true"', 'selected="1"')
+    actions = {m["idref"]: m["action"] for m in bridge.parse_tailoring_xml(xml)["modifications"]}
+    assert actions == {RULE_AUDIT: "unselect", RULE_ROOT_LOGIN: "select"}
+    assert bridge._xml_true(None) is True
+    assert bridge._xml_true(" true ") is True
+    assert bridge._xml_true("FALSE") is False
+
+
+def test_text_destined_for_xml_is_checked_before_anything_is_written(bridge, run_bridge):
+    for bad in ("handled\x08elsewhere", "a\x00b", "\x1f"):
+        with pytest.raises(bridge.BridgeError, match="control characters"):
+            bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": bad}])
+        with pytest.raises(bridge.BridgeError, match="control characters"):
+            bridge._validate_modifications([{"idref": VALUE_TIMEOUT, "action": "set-value", "value": bad}])
+    # tabs and newlines are fine in a remark (collapsed) and in a value (kept)
+    mods = bridge._validate_modifications([
+        {"idref": RULE_AUDIT, "action": "unselect", "remark": "line\none\ttwo"},
+        {"idref": VALUE_TIMEOUT, "action": "set-value", "value": "1\n2"}])
+    assert mods[0]["remark"] == "line one two"
+    assert mods[1]["value"] == "1\n2"
+    with pytest.raises(bridge.BridgeError, match="at most"):
+        bridge._validate_modifications([{"idref": VALUE_TIMEOUT, "action": "set-value", "value": "x" * 4001}])
+    # a rejected document leaves no file and no registration behind
+    bad_json = json.dumps([{"idref": RULE_AUDIT, "action": "unselect", "remark": "a\x08b"}])
+    assert "control characters" in run_bridge("create-tailoring", PROFILE_BASE, bad_json, expect_rc=1)["error"]
+    assert not bridge.TAILORING_DIR.exists() or not list(bridge.TAILORING_DIR.iterdir())
+    assert "tailorings" not in run_bridge("get-config")
+
+
+def test_tailor_rule_edits_one_rule_of_the_customization(run_bridge, bridge):
+    # no customization yet: one is created around the change
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "  accepted\nrisk ")
+    assert info["modifications"] == [{"idref": RULE_ROOT_LOGIN, "action": "unselect", "remark": "accepted risk"}]
+    assert run_bridge("get-config")["tailorings"] == {PROFILE_BASE: info["path"]}
+    # other customizations stay, the same rule is replaced rather than repeated
+    run_bridge("create-tailoring", PROFILE_BASE, json.dumps(MODIFICATIONS))
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "ticket 42")
+    assert info["modifications"] == [  # selects first: the parsed order, not the insertion order
+        {"idref": RULE_AUDIT, "action": "unselect"},
+        {"idref": RULE_ROOT_LOGIN, "action": "unselect", "remark": "ticket 42"},
+        {"idref": VALUE_TIMEOUT, "action": "refine-value", "selector": "5_minutes"},
+        {"idref": VALUE_TIMEOUT, "action": "set-value", "value": "12"},
+    ]
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "enable")
+    assert info["modifications"][1] == {"idref": RULE_ROOT_LOGIN, "action": "select"}
+    assert len(info["modifications"]) == len(MODIFICATIONS)
+    # arguments are checked
+    assert "error" in run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, expect_rc=1)
+    dropped = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "drop", expect_rc=1)
+    assert "enable or disable" in dropped["error"]
+    missing = run_bridge("tailor-rule", PROFILE_BASE, "xccdf_org.test.content_rule_nope", "disable", expect_rc=1)
+    assert "rule not found" in missing["error"]
+    no_profile = run_bridge("tailor-rule", "xccdf_org.test.content_profile_nope", RULE_ROOT_LOGIN, "disable",
+                            expect_rc=1)
+    assert "profile not found" in no_profile["error"]
+    assert "invalid rule id" in run_bridge("tailor-rule", PROFILE_BASE, "bad id", "disable", expect_rc=1)["error"]
+    # a customization that cannot be applied is not silently replaced
+    bridge.Path(info["path"]).write_text("<nope/>")
+    broken = run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", expect_rc=1)
+    assert "cannot be changed" in broken["error"]
+
+
 def test_parse_round_trip(bridge, datastream):
     _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
     info = bridge.parse_tailoring_xml(xml)
