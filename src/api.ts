@@ -244,9 +244,9 @@ export const listProfiles = (datastream?: string) =>
 export const profileRules = (profileId: string, datastream?: string) =>
     run<ProfileRules>("profile-rules", [profileId, ...datastreamArgs(datastream)]);
 
-/** How a rule fared in the last scans of a profile, newest first. */
-export const ruleHistory = (ruleId: string, baseProfileId: string, limit = 20) =>
-    run<RuleHistoryPoint[]>("rule-history", [ruleId, baseProfileId, "--limit", String(limit)]);
+/** How a rule fared in the last scans of a profile (against the given content), newest first. */
+export const ruleHistory = (ruleId: string, baseProfileId: string, datastream?: string, limit = 20) =>
+    run<RuleHistoryPoint[]>("rule-history", [ruleId, baseProfileId, "--limit", String(limit), ...datastreamArgs(datastream)]);
 
 export const ruleInfo = (ruleId: string, datastream?: string) =>
     run<RuleDetail>("rule-info", [ruleId, ...datastreamArgs(datastream)]);

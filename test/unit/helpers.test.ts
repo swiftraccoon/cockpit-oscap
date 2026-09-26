@@ -8,9 +8,11 @@ import { describe, it } from "node:test";
 import {
     comparableScans,
     countHistory,
+    describeHistory,
     emptyCounts,
     formatDuration,
     formatScore,
+    historyResultLabel,
     matchesSearch,
     parseTimestamp,
     profileChoices,
@@ -116,10 +118,14 @@ describe("small helpers", () => {
         assert.deepEqual([...base], ["a"]);  // untouched
     });
 
-    it("counts how a rule fared across scans", () => {
+    it("counts and describes how a rule fared across scans", () => {
         const points = ["fail", "pass", "error", "fixed", "notselected", "notapplicable", "unknown"].map(result => ({ result }));
-        assert.deepEqual(countHistory(points), { failed: 2, passed: 2, other: 3 });
-        assert.deepEqual(countHistory([]), { failed: 0, passed: 0, other: 0 });
+        assert.deepEqual(countHistory(points), { failed: 2, passed: 2, skipped: 1, other: 2 });
+        assert.deepEqual(countHistory([]), { failed: 0, passed: 0, skipped: 0, other: 0 });
+        assert.equal(describeHistory(points), "Last 7 scans: 2 failed, 2 passed, 1 not evaluated, 2 other");
+        assert.equal(describeHistory([{ result: "fail" }]), "Last 1 scan: 1 failed, 0 passed");
+        assert.equal(historyResultLabel("notselected"), "Not evaluated");
+        assert.equal(historyResultLabel("fail"), "Fail");
     });
 
     it("offers the complete earlier scans of a series for comparison, newest first", () => {

@@ -1723,15 +1723,26 @@ DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 200
 
 
-def rule_history(rule_id: str, base_profile_id: str, limit: int) -> list[RuleHistoryPoint]:
-    """How a rule fared in the last ``limit`` complete scans of a profile, newest first."""
+def rule_history(rule_id: str, base_profile_id: str, limit: int, datastream: str = "") -> list[RuleHistoryPoint]:
+    """How a rule fared in the last ``limit`` complete scans of a profile, newest first.
+
+    Only scans of the same content count when ``datastream`` is given (a result from before the
+    content path was recorded matches any, as the result page's comparison has it).
+    """
     points: list[RuleHistoryPoint] = []
-    for summary in list_results():
-        if summary["base_profile_id"] != base_profile_id or summary["status"] != "complete":
+    if not RESULTS_DIR.is_dir():
+        return points
+    # ids sort chronologically; each result file is read once
+    ids = sorted((p.name[:-len(".json")] for p in RESULTS_DIR.glob("*.json")), reverse=True)
+    for result_id in ids:
+        if not RESULT_ID_RE.match(result_id):
             continue
         try:
-            result = _load_result(summary["id"])
+            result = _load_result(result_id)
         except BridgeError:
+            continue
+        if (result["base_profile_id"] != base_profile_id or result["status"] != "complete"
+                or (datastream and result["datastream"] and result["datastream"] != datastream)):
             continue
         outcome = next((r["result"] for r in result["results"] if r["rule_id"] == rule_id), RESULT_NOTSELECTED)
         points.append(RuleHistoryPoint(id=result["id"], timestamp=result["timestamp"], score=result["score"],
@@ -1742,7 +1753,7 @@ def rule_history(rule_id: str, base_profile_id: str, limit: int) -> list[RuleHis
 
 
 def cmd_rule_history(args: list[str]) -> None:
-    """rule-history <rule id> <base profile id> [--limit N]"""
+    """rule-history <rule id> <base profile id> [--limit N] [--datastream path]"""
     positional = _positional(args)
     if len(positional) < REQUIRED_PAIR:
         raise BridgeError("rule-history requires a rule id and a base profile id")
@@ -1756,7 +1767,7 @@ def cmd_rule_history(args: list[str]) -> None:
         raise BridgeError(f"invalid --limit: {raw_limit!r}") from exc
     if not 1 <= limit <= MAX_HISTORY_LIMIT:
         raise BridgeError(f"--limit must be between 1 and {MAX_HISTORY_LIMIT}")
-    output_json(rule_history(rule_id, base_profile_id, limit))
+    output_json(rule_history(rule_id, base_profile_id, limit, _opt(args, "--datastream") or ""))
 
 
 def cmd_get_result(args: list[str]) -> None:

@@ -246,6 +246,11 @@
   background-color: var(--pf-t--global--color--status--info--default);
 }
 
+.oscap-history-notselected {
+  background-color: transparent;
+  border-color: var(--pf-t--global--border--color--default);
+}
+
 .oscap-remark-removed {
   text-decoration: line-through;
 }

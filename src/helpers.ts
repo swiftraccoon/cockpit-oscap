@@ -174,19 +174,40 @@ export function formatDuration(seconds: number): string {
     return rest === 0 ? hoursText : cockpit.format("$0 $1", hoursText, cockpit.format(cockpit.ngettext("$0 minute", "$0 minutes", rest), rest));
 }
 
-/** How often a rule failed, passed or was otherwise reported across scans (for a history strip). */
-export function countHistory(points: { result: string }[]): { failed: number; passed: number; other: number } {
-    const counts = { failed: 0, passed: 0, other: 0 };
+export interface HistoryCounts { failed: number; passed: number; skipped: number; other: number }
+
+/** How often a rule failed, passed, was skipped or otherwise reported across scans (for a history strip). */
+export function countHistory(points: { result: string }[]): HistoryCounts {
+    const counts: HistoryCounts = { failed: 0, passed: 0, skipped: 0, other: 0 };
     for (const point of points) {
         const kind = normalizeResult(point.result);
         if (kind === "fail" || kind === "error")
             counts.failed += 1;
         else if (kind === "pass" || kind === "fixed")
             counts.passed += 1;
+        else if (point.result === "notselected")
+            counts.skipped += 1;
         else
             counts.other += 1;
     }
     return counts;
+}
+
+/** "Last 8 scans: 5 failed, 3 passed" (parts a translator can order, joined as a list). */
+export function describeHistory(points: { result: string }[]): string {
+    const counts = countHistory(points);
+    const parts = [
+        cockpit.format(_("$0 failed"), counts.failed),
+        cockpit.format(_("$0 passed"), counts.passed),
+        ...counts.skipped > 0 ? [cockpit.format(_("$0 not evaluated"), counts.skipped)] : [],
+        ...counts.other > 0 ? [cockpit.format(_("$0 other"), counts.other)] : [],
+    ];
+    return cockpit.format(cockpit.ngettext("Last $0 scan: $1", "Last $0 scans: $1", points.length), points.length, parts.join(", "));
+}
+
+/** A rule result as the history strip names it ("notselected" is "Not evaluated" there). */
+export function historyResultLabel(result: string): string {
+    return result === "notselected" ? _("Not evaluated") : resultLabel(result);
 }
 
 interface SeriesMember { base_profile_id: string; datastream: string }

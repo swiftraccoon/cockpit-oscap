@@ -25,7 +25,7 @@ import * as timeformat from "timeformat";
 
 import { ruleHistory, ruleInfo } from "../api";
 import { useAsync } from "../app-hooks";
-import { countHistory, normalizeResult, parseTimestamp, referenceSource, resultLabel } from "../helpers";
+import { describeHistory, formatScore, historyResultLabel, normalizeResult, parseTimestamp, referenceSource } from "../helpers";
 import type { Reference, RuleDetail, RuleHistoryPoint } from "../types";
 
 const _ = cockpit.gettext;
@@ -100,35 +100,63 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
+interface HistoryRequest {
+    baseProfileId: string;
+    /** The scan being looked at: outlined in the strip. */
+    currentId: string;
+    /** The content the scan used; only scans of the same content count. */
+    datastream: string;
+    /** The application's data version: a new scan invalidates what was loaded before. */
+    version: number;
+}
+
+// one bridge call per profile, rule and content until the results change (every row expansion asks)
+const historyCache = new Map<string, Promise<RuleHistoryPoint[]>>();
+let historyVersion = -1;
+
+function loadHistory(ruleId: string, request: HistoryRequest): Promise<RuleHistoryPoint[]> {
+    if (request.version !== historyVersion) {
+        historyCache.clear();
+        historyVersion = request.version;
+    }
+    const key = `${request.baseProfileId}\n${request.datastream}\n${ruleId}`;
+    let pending = historyCache.get(key);
+    if (!pending) {
+        pending = ruleHistory(ruleId, request.baseProfileId, request.datastream);
+        historyCache.set(key, pending);
+        pending.catch(() => historyCache.delete(key));
+    }
+    return pending;
+}
+
 /** How the rule fared in the profile's recent scans: one square per scan, oldest first, each a link. */
 const RuleHistory = ({ ruleId, points, currentId }: { ruleId: string; points: RuleHistoryPoint[]; currentId: string }) => {
-    const counts = countHistory(points);
     const ordered = [...points].reverse();
     return (
         <div className="oscap-history">
             <span className="oscap-history-strip" role="list" aria-label={_("Result per scan, oldest first")}>
                 {ordered.map(point => {
                     const at = parseTimestamp(point.timestamp);
-                    const label = cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : point.timestamp, resultLabel(point.result));
-                    const kind = normalizeResult(point.result);
+                    const label = cockpit.format("$0 · $1 · $2", at ? timeformat.dateTime(at) : point.timestamp,
+                                                 historyResultLabel(point.result), formatScore(point.score));
+                    const kind = point.result === "notselected" ? "notselected" : normalizeResult(point.result);
+                    const current = point.id === currentId;
                     return (
-                        <Tooltip key={point.id} content={label}>
-                            <a
-                                role="listitem"
-                                href={cockpit.location.encode(["results", point.id], { rule: ruleId })}
-                                aria-label={label}
-                                aria-current={point.id === currentId ? "true" : undefined}
-                                className={`oscap-history-dot oscap-history-${kind}${point.id === currentId ? " oscap-history-current" : ""}`}
-                            />
-                        </Tooltip>
+                        <span key={point.id} role="listitem">
+                            <Tooltip content={label} aria="none">
+                                <a
+                                    href={"#" + cockpit.location.encode(["results", point.id], { rule: ruleId })}
+                                    onClick={ev => { ev.preventDefault(); cockpit.location.go(["results", point.id], { rule: ruleId }) }}
+                                    aria-label={current ? cockpit.format(_("$0 (this scan)"), label) : label}
+                                    aria-current={current ? "true" : undefined}
+                                    className={`oscap-history-dot oscap-history-${kind}${current ? " oscap-history-current" : ""}`}
+                                />
+                            </Tooltip>
+                        </span>
                     );
                 })}
             </span>
-            <span className="oscap-muted">
-                {cockpit.format(_("Last $0 scans: $1 failed, $2 passed"),
-                                points.length, counts.failed, counts.passed)}
-                {counts.other > 0 && cockpit.format(_(", $0 other"), counts.other)}
-            </span>
+            <span className="oscap-muted">{describeHistory(points)}</span>
         </div>
     );
 };
@@ -150,13 +178,16 @@ export const RuleDetails = ({
     /** The profile's customization already disables the rule (later scans skip it). */
     excluded?: boolean;
     /** Show how the rule fared in the profile's recent scans (on a result page). */
-    history?: { baseProfileId: string; currentId: string };
+    history?: HistoryRequest;
 }) => {
     // Callers mount this only for expanded rows, so the fetch happens on first expansion.
     const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
     const past = useAsync(
-        () => (history ? ruleHistory(ruleId, history.baseProfileId) : Promise.resolve(null)),
-        [ruleId, history?.baseProfileId]);
+        () => (history ? loadHistory(ruleId, history) : Promise.resolve(null)),
+        [ruleId, history?.baseProfileId, history?.datastream, history?.version]);
+    // the strip only makes sense with the scan on screen in it: an interrupted scan, or one older
+    // than the ones kept, has no place there
+    const points = history && past.data && past.data.some(p => p.id === history.currentId) ? past.data : null;
 
     return (
         <div className="oscap-expanded-details">
@@ -230,11 +261,17 @@ id={`remediate-${ruleId}`} variant="secondary" size="sm"
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}
-                {history && past.data && past.data.length > 1 && (
+                {history && (
                     <DescriptionListGroup>
                         <DescriptionListTerm>{_("History")}</DescriptionListTerm>
                         <DescriptionListDescription>
-                            <RuleHistory ruleId={ruleId} points={past.data} currentId={history.currentId} />
+                            {past.loading && !past.data
+                                ? <Spinner size="sm" aria-label={_("Loading the rule's history")} />
+                                : past.error
+                                    ? <span className="oscap-muted">{cockpit.format(_("History unavailable: $0"), past.error)}</span>
+                                    : points && points.length > 1
+                                        ? <RuleHistory ruleId={ruleId} points={points} currentId={history.currentId} />
+                                        : <span className="oscap-muted">{_("No earlier scans of this profile to compare with")}</span>}
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}

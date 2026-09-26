@@ -667,7 +667,12 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                 {...canRemediate && normalizeResult(rule.result) === "fail" &&
                                                     { onRemediate: () => remediateRules([rule.rule_id]) }}
                                                 excluded={loaded.currently_excluded.includes(rule.rule_id)}
-                                                history={{ baseProfileId: loaded.base_profile_id, currentId: loaded.id }}
+                                                history={{
+                                                    baseProfileId: loaded.base_profile_id,
+                                                    currentId: loaded.id,
+                                                    datastream: loaded.datastream,
+                                                    version: app.version,
+                                                }}
                                                 {...canExclude && !loaded.currently_excluded.includes(rule.rule_id) &&
                                                     ["fail", "error"].includes(normalizeResult(rule.result)) &&
                                                     { onExclude: () => excludeRule(rule) }}

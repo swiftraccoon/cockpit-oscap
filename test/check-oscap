@@ -161,6 +161,13 @@ class TestOscap(testlib.MachineCase):
         b.go(f"#/results/{current}?compare=2001-01-01T000000-{profile}")
         b.wait_in_text("#result-compare", "Jan 1, 2001")
         b.wait_in_text("#result-summary", "Since the chosen scan")
+        # an expanded rule shows its history across those scans; a square opens that scan's rule
+        b.click("#result-rules tbody:first-of-type > tr td.pf-v6-c-table__toggle button")
+        b.wait_visible("#result-rules tr:not([hidden]) .oscap-history-strip")
+        b.wait_in_text("#result-rules tr:not([hidden]) .oscap-history", "Last 3 scans")
+        b.click("#result-rules tr:not([hidden]) .oscap-history-dot:first-child")
+        b.wait_in_text("nav.pf-v6-c-breadcrumb", "Jan 1, 2001")
+        b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
 
     def testProfileEditor(self) -> None:
         b = self.browser
