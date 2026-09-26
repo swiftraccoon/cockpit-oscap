@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# the bridge's own configuration: the timer's drop-in and the scan results, config and tailoring
+if [ "$1" = purge ]; then
+	rm -rf /etc/systemd/system/cockpit-oscap-scan.timer.d /var/lib/cockpit-oscap
+fi
+
+#DEBHELPER#

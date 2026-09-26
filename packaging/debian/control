@@ -10,7 +10,7 @@ Rules-Requires-Root: no
 Package: cockpit-oscap
 Architecture: all
 Depends: cockpit-bridge, openscap-scanner, python3 (>= 3.9), ${misc:Depends}
-Recommends: ssg-base, ssg-debian | ssg-debderived
+Recommends: ssg-base, ssg-debian, ssg-debderived
 Description: OpenSCAP compliance scanning for Cockpit
  Evaluate the system against SCAP Security Guide profiles (CIS, STIG, PCI DSS,
  ANSSI, ...), browse results rule by rule, customize profiles with tailoring,

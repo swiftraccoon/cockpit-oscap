@@ -21,5 +21,8 @@ override_dh_auto_install:
 	find $(CURDIR)/debian/cockpit-oscap/usr/share/cockpit -name '*.map' -delete
 
 override_dh_installsystemd:
-	# the Compliance page enables the timer once a schedule is configured
-	dh_installsystemd --no-enable --no-start
+	# the Compliance page enables the timer once a schedule is configured; an upgrade restarts
+	# it only when it was running, and never interrupts a scan in progress
+	dh_installsystemd --no-enable --no-start --restart-after-upgrade cockpit-oscap-scan.timer
+	dh_installsystemd --no-enable --no-start --no-stop-on-upgrade --no-restart-after-upgrade \
+		cockpit-oscap-scan.service

@@ -135,7 +135,7 @@ jobs:
         run: >
           apt-get install -y --no-install-recommends
           make nodejs npm gettext xz-utils python3 jq
-          debhelper dpkg-dev fakeroot lintian
+          build-essential debhelper lintian
 
       - name: Pacify git's permission check
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

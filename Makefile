@@ -142,7 +142,8 @@ dist: $(TARFILE)
 # pre-built dist/ (so it's not necessary) and ship package-lock.json (so that
 # node_modules/ can be reconstructed if necessary)
 $(TARFILE): export NODE_ENV=production
-$(TARFILE): $(DIST_TEST) $(SPEC) packaging/arch/PKGBUILD
+# every tracked file goes into the tarball, so any of them changing makes it stale
+$(TARFILE): $(DIST_TEST) $(SPEC) packaging/arch/PKGBUILD $(shell git ls-files 2>/dev/null)
 	if type appstream-util >/dev/null 2>&1; then appstream-util validate-relax --nonet *.metainfo.xml; fi
 	tar --xz $(TAR_ARGS) -cf $(TARFILE) --transform 's,^,$(RPM_NAME)/,' \
 		--exclude packaging/$(SPEC).in --exclude node_modules \
@@ -176,7 +177,7 @@ rpm: $(TARFILE) $(NODE_CACHE) $(SPEC)
 	find `pwd`/output -name '*.rpm' -printf '%f\n' -exec mv {} . \;
 	rm -rf "`pwd`/rpmbuild" "`pwd`/output" "`pwd`/build"
 
-# build a Debian package from the release tarball (needs debhelper and dpkg-dev)
+# build a Debian package from the release tarball (needs build-essential and debhelper)
 deb: $(TARFILE)
 	rm -rf debbuild
 	mkdir debbuild
@@ -229,4 +230,4 @@ $(NODE_MODULES_TEST): package.json
 	for _ in `seq 3`; do timeout 10m env -u NODE_ENV npm install --ignore-scripts && exit 0; done; exit 1
 	env -u NODE_ENV npm prune
 
-.PHONY: all clean install devel-install devel-uninstall print-version dist node-cache rpm prepare-check check vm print-vm lint test-bridge codecheck
+.PHONY: all clean install devel-install devel-uninstall print-version dist node-cache rpm deb prepare-check check vm print-vm lint test-bridge codecheck

@@ -86,8 +86,9 @@ the scanner or the content is missing, the page explains what to install.
 ## Installation
 
 Packages are built from the source tarball: `make rpm` builds an RPM from the
-spec in `packaging/`, `make deb` a Debian package from `packaging/debian/`
-(both need the distribution's packaging tools). To install from a checkout:
+spec in `packaging/` (needs `rpm-build`), `make deb` a Debian package from
+`packaging/debian/` (needs `build-essential` and `debhelper`). To install from
+a checkout:
 
 ```sh
 git clone https://github.com/swiftraccoon/cockpit-oscap.git

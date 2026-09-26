@@ -13,10 +13,12 @@ Comment: Shared files from the Cockpit project (https://github.com/cockpit-proje
 
 Files: dist/*
 Copyright: cockpit-oscap contributors and the authors of the bundled npm modules
-License: LGPL-2.1-or-later and MIT
-Comment: The bundled JavaScript libraries and their licenses are listed in
+License: LGPL-2.1-or-later and MIT and 0BSD
+Comment: The bundle carries PatternFly, React, focus-trap, tabbable, lodash,
+ prop-types, dequal and scheduler (MIT) and tslib (0BSD); their notices are in
  dist/index.js.LEGAL.txt, installed as
- /usr/share/cockpit/oscap/index.js.LEGAL.txt.
+ /usr/share/cockpit/oscap/index.js.LEGAL.txt, and the exact versions in
+ runtime-npm-modules.txt.
 
 License: LGPL-2.1-or-later
  This library is free software; you can redistribute it and/or modify it
@@ -50,3 +52,15 @@ License: MIT
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  DEALINGS IN THE SOFTWARE.
+
+License: 0BSD
+ Permission to use, copy, modify, and/or distribute this software for any
+ purpose with or without fee is hereby granted.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

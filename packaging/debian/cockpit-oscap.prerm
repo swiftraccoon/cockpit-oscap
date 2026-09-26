@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# a schedule the Compliance page configured stops with the package
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+	deb-systemd-invoke stop cockpit-oscap-scan.timer cockpit-oscap-scan.service >/dev/null || true
+fi
+
+#DEBHELPER#
