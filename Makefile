@@ -97,13 +97,29 @@ clean:
 	rm -f po/LINGUAS
 	rm -f metafile.json runtime-npm-modules.txt
 
+SYSTEMD_UNIT_DIR ?= $(PREFIX)/lib/systemd/system
+
 install: $(DIST_TEST) po/LINGUAS
 	mkdir -p $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)
 	cp -r dist/* $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)
+	install -m 0755 src/oscap-bridge.py $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)/oscap-bridge.py
+	mkdir -p $(DESTDIR)$(SYSTEMD_UNIT_DIR)
+	install -m 0644 systemd/cockpit-oscap-scan.service systemd/cockpit-oscap-scan.timer $(DESTDIR)$(SYSTEMD_UNIT_DIR)/
 	mkdir -p $(DESTDIR)$(PREFIX)/share/metainfo/
 	msgfmt --xml -d po \
 		--template $(APPSTREAMFILE) \
 		-o $(DESTDIR)$(PREFIX)/share/metainfo/$(APPSTREAMFILE)
+
+# convenience targets for the development checks CI runs
+lint: $(NODE_MODULES_TEST)
+	npm run typecheck
+	npm run eslint
+	npm run stylelint
+	ruff check src/oscap-bridge.py test-bridge/
+	mypy src/oscap-bridge.py
+
+test-bridge:
+	python3 -m pytest
 
 # this requires a built source tree and avoids having to install anything system-wide
 devel-install: $(DIST_TEST)
@@ -200,4 +216,4 @@ $(NODE_MODULES_TEST): package.json
 	for _ in `seq 3`; do timeout 10m env -u NODE_ENV npm install --ignore-scripts && exit 0; done; exit 1
 	env -u NODE_ENV npm prune
 
-.PHONY: all clean install devel-install devel-uninstall print-version dist node-cache rpm prepare-check check vm print-vm
+.PHONY: all clean install devel-install devel-uninstall print-version dist node-cache rpm prepare-check check vm print-vm lint test-bridge codecheck

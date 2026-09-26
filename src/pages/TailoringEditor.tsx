@@ -1,691 +1,610 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+/*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Profile editor: enable or disable rules and adjust values, saved as an
+ * XCCDF tailoring file that scans of this profile apply automatically.
+ */
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AlertActionCloseButton } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
-import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
-import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
-import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
+import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
+import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { FormSelect, FormSelectOption } from "@patternfly/react-core/dist/esm/components/FormSelect/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
-import { MenuToggle } from "@patternfly/react-core/dist/esm/components/MenuToggle/index.js";
 import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
-import { Select, SelectList, SelectOption } from "@patternfly/react-core/dist/esm/components/Select/index.js";
-import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
+import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
+import { Switch } from "@patternfly/react-core/dist/esm/components/Switch/index.js";
+import { Tab, Tabs, TabTitleText } from "@patternfly/react-core/dist/esm/components/Tabs/index.js";
 import { TextInput } from "@patternfly/react-core/dist/esm/components/TextInput/index.js";
-import {
-    Toolbar,
-    ToolbarContent,
-    ToolbarItem,
-} from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
 import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
+import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import { createTailoring, loadConfig, parseTailoring, profileRules } from "../api";
-import { RuleRow } from "../components/RuleRow.jsx";
-import type { Config, RuleInfo, TailoringModification } from "../types";
+import { KebabDropdown } from "cockpit-components-dropdown";
+import { ListingTable } from "cockpit-components-table";
+import type { ListingTableRowProps } from "cockpit-components-table";
+import { SimpleSelect } from "cockpit-components-simple-select";
+import { useDialogs } from "dialogs";
+
+import { createTailoring, deleteTailoring, getConfig, importTailoring, parseTailoringFile, profileRules } from "../api";
+import { useApp } from "../app";
+import { useAsync } from "../app-hooks";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { SeverityLabel } from "../components/labels";
+import { RuleDetails } from "../components/RuleDetails";
+import { ErrorAlert, ErrorState, Loading } from "../components/states";
+import {
+    SEVERITIES,
+    compareSeverity,
+    downloadFile,
+    errorMessage,
+    matchesSearch,
+    normalizeSeverity,
+    profileShortName,
+    ruleShortName,
+    safeFilename,
+    severityLabel,
+} from "../helpers";
+import type { RuleInfo, TailoringInfo, TailoringModification, ValueInfo } from "../types";
 
 const _ = cockpit.gettext;
 
-const TAILORING_DIR = "/var/lib/cockpit-oscap/tailoring";
+interface EditorState {
+    selection: Record<string, boolean>;
+    values: Record<string, string>;
+}
 
-// ---------------------------------------------------------------------------
-// Category derivation from XCCDF rule IDs
-// ---------------------------------------------------------------------------
+type StateFilter = "all" | "selected" | "unselected" | "changed";
+const CUSTOM = "__custom__";
 
-/** Category keywords mapped from rule ID segments. */
-const CATEGORY_MAP: [RegExp, string][] = [
-    [/\brule_sysctl_/, "Kernel Settings"],
-    [/\brule_audit_/, "Audit & Logging"],
-    [/\brule_service_/, "Services & Daemons"],
-    [/\brule_file_/, "File Permissions"],
-    [/\brule_permissions_/, "File Permissions"],
-    [/\brule_accounts_/, "Accounts & Authentication"],
-    [/\brule_package_/, "Software & Packages"],
-    [/\brule_selinux_/, "SELinux"],
-    [/\brule_firewall_/, "Firewall"],
-    [/\brule_network_/, "Network"],
-    [/\brule_mount_/, "Filesystem & Mounts"],
-    [/\brule_partition_/, "Filesystem & Mounts"],
-    [/\brule_grub_/, "Bootloader"],
-    [/\brule_banner_/, "Login Banners"],
-    [/\brule_chronyd_/, "Time Synchronization"],
-    [/\brule_crypto_/, "Cryptographic Policies"],
-    [/\brule_sudo_/, "Privilege Escalation"],
-    [/\brule_sshd_/, "SSH Configuration"],
-    [/\brule_ssh_/, "SSH Configuration"],
-    [/\brule_aide_/, "Integrity Checking"],
-    [/\brule_rsyslog_/, "Logging"],
-    [/\brule_journald_/, "Logging"],
-    [/\brule_coredump_/, "Core Dumps"],
-];
+function baseState(rules: RuleInfo[], values: ValueInfo[]): EditorState {
+    const state: EditorState = { selection: {}, values: {} };
+    rules.forEach(rule => { state.selection[rule.id] = rule.selected });
+    values.forEach(value => { state.values[value.id] = value.value });
+    return state;
+}
 
-function deriveCategory(ruleId: string): string {
-    for (const [pattern, category] of CATEGORY_MAP) {
-        if (pattern.test(ruleId)) return category;
+function applyModifications(base: EditorState, values: ValueInfo[], mods: TailoringModification[]): EditorState {
+    const state: EditorState = { selection: { ...base.selection }, values: { ...base.values } };
+    const valuesById = new Map(values.map(v => [v.id, v]));
+    for (const mod of mods) {
+        if (mod.action === "select" || mod.action === "unselect") {
+            if (mod.idref in state.selection)
+                state.selection[mod.idref] = mod.action === "select";
+        } else if (mod.action === "refine-value") {
+            const option = valuesById.get(mod.idref)?.options.find(o => o.selector === mod.selector);
+            if (option)
+                state.values[mod.idref] = option.value;
+        } else if (mod.action === "set-value" && mod.idref in state.values) {
+            state.values[mod.idref] = mod.value ?? "";
+        }
     }
-    return "Other";
+    return state;
 }
 
-type FilterMode = "all" | "modified" | "enabled" | "disabled";
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-interface TailoringEditorProps {
-    profileId: string;
+function computeModifications(base: EditorState, current: EditorState, values: ValueInfo[]): TailoringModification[] {
+    const mods: TailoringModification[] = [];
+    for (const [id, selected] of Object.entries(current.selection)) {
+        if (base.selection[id] !== selected)
+            mods.push({ idref: id, action: selected ? "select" : "unselect" });
+    }
+    for (const value of values) {
+        const text = current.values[value.id] ?? "";
+        if (text === base.values[value.id])
+            continue;
+        const option = value.options.find(o => o.value === text);
+        mods.push(option
+            ? { idref: value.id, action: "refine-value", selector: option.selector }
+            : { idref: value.id, action: "set-value", value: text });
+    }
+    return mods;
 }
 
-export const TailoringEditor: React.FunctionComponent<TailoringEditorProps> = ({ profileId }) => {
-    // State
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [rules, setRules] = useState<RuleInfo[]>([]);
-    const [baseRules, setBaseRules] = useState<Map<string, boolean>>(new Map());
-    const [, setConfig] = useState<Config>({});
-    const [tailoringPath, setTailoringPath] = useState<string | null>(null);
-    const [successMsg, setSuccessMsg] = useState<string | null>(null);
-    const [warningMsg, setWarningMsg] = useState<string | null>(null);
-    const [saving, setSaving] = useState(false);
+function statesEqual(a: EditorState | null, b: EditorState | null): boolean {
+    if (!a || !b)
+        return a === b;
+    return JSON.stringify(a.selection) === JSON.stringify(b.selection) &&
+        JSON.stringify(a.values) === JSON.stringify(b.values);
+}
 
-    // Filter state
-    const [searchText, setSearchText] = useState("");
-    const [filterMode, setFilterMode] = useState<FilterMode>("all");
-    const [filterOpen, setFilterOpen] = useState(false);
-
-    // Category expand state
-    const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
-
-    // File input ref for import
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
-    // -----------------------------------------------------------------------
-    // Load data on mount
-    // -----------------------------------------------------------------------
-
-    useEffect(() => {
-        let cancelled = false;
-
-        async function init() {
+export const TailoringEditor = ({ profileId }: { profileId: string }) => {
+    const app = useApp();
+    const Dialogs = useDialogs();
+    const data = useAsync(async () => {
+        const [rules, config] = await Promise.all([profileRules(profileId), getConfig()]);
+        const path = config.tailorings?.[profileId];
+        let tailoring: TailoringInfo | null = null;
+        if (path) {
             try {
-                const [ruleList, configData] = await Promise.all([
-                    profileRules(profileId),
-                    loadConfig(),
-                ]);
-                if (cancelled) return;
-
-                setRules(ruleList);
-                setConfig(configData);
-
-                // Save baseline selections
-                const baseline = new Map<string, boolean>();
-                for (const r of ruleList) {
-                    baseline.set(r.id, r.selected);
-                }
-                setBaseRules(baseline);
-
-                // Check for existing tailoring
-                const existingPath = configData[`tailoring_${profileId}`] as string | undefined;
-                if (existingPath) {
-                    setTailoringPath(existingPath);
-                    try {
-                        const parsed = await parseTailoring(existingPath);
-                        if (!cancelled) {
-                            applyModifications(ruleList, parsed.modifications);
-                        }
-                    } catch {
-                        // Tailoring file may not exist yet — that's fine
-                    }
-                }
-
-                // Expand all categories by default
-                const cats = new Set<string>();
-                for (const r of ruleList) {
-                    cats.add(deriveCategory(r.id));
-                }
-                if (!cancelled) setExpandedCategories(cats);
-            } catch (err) {
-                if (!cancelled) setError(String(err));
-            } finally {
-                if (!cancelled) setLoading(false);
+                tailoring = await parseTailoringFile(path);
+            } catch {
+                tailoring = null; // stale configuration entry; treat as no customizations
             }
         }
-
-        init();
-        return () => { cancelled = true };
+        return { rules, tailoring };
     }, [profileId]);
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
+    const [tab, setTab] = useState<"rules" | "values">("rules");
+    const [current, setCurrent] = useState<EditorState | null>(null);
+    const [saved, setSaved] = useState<EditorState | null>(null);
+    const [tailoring, setTailoring] = useState<TailoringInfo | null>(null);
+    const [notice, setNotice] = useState<{ variant: "success" | "warning" | "info"; title: string } | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [search, setSearch] = useState("");
+    const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+    const [severityFilter, setSeverityFilter] = useState("all");
+    const [groupFilter, setGroupFilter] = useState("all");
+    const [customValues, setCustomValues] = useState<Set<string>>(new Set());
+    const fileInput = useRef<HTMLInputElement>(null);
 
-    /** Apply tailoring modifications to the rules array. */
-    function applyModifications(ruleList: RuleInfo[], modifications: TailoringModification[]) {
-        const modMap = new Map<string, TailoringModification>();
-        for (const m of modifications) {
-            modMap.set(m.rule_id, m);
-        }
+    const rules = useMemo(() => data.data?.rules.rules ?? [], [data.data]);
+    const values = useMemo(() => data.data?.rules.values ?? [], [data.data]);
+    const base = useMemo(() => baseState(rules, values), [rules, values]);
+    const groups = useMemo(() => Array.from(new Set(rules.map(r => r.group || ""))).sort((a, b) => a.localeCompare(b)),
+                           [rules]);
 
-        const orphaned: string[] = [];
-        for (const m of modifications) {
-            if (!ruleList.find(r => r.id === m.rule_id)) {
-                orphaned.push(m.rule_id);
-            }
-        }
+    useEffect(() => {
+        if (!data.data)
+            return;
+        const state = data.data.tailoring
+            ? applyModifications(base, values, data.data.tailoring.modifications)
+            : base;
+        setSaved(state);
+        setCurrent(state);
+        setTailoring(data.data.tailoring);
+    }, [data.data, base, values]);
 
-        if (orphaned.length > 0) {
-            setWarningMsg(cockpit.format(
-                _("$0 tailoring rule(s) not found in profile and were ignored."),
-                orphaned.length,
-            ));
-        }
-
-        setRules(ruleList.map(r => {
-            const mod = modMap.get(r.id);
-            if (mod) {
-                return {
-                    ...r,
-                    selected: mod.action === "select",
-                };
-            }
-            return r;
-        }));
+    if ((data.loading && !data.data) || !current || !saved)
+        return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
+    if (data.error || !data.data) {
+        return (
+            <PageSection hasBodyWrapper={false} isFilled>
+                <ErrorState title={_("Failed to load the profile")} error={data.error} onRetry={() => data.reload()} />
+                <Button variant="link" onClick={() => cockpit.location.go(["profiles"])}>{_("Back to profiles")}</Button>
+            </PageSection>
+        );
     }
 
-    /** Check if a rule has been modified from its baseline. */
-    function isModified(rule: RuleInfo): boolean {
-        const original = baseRules.get(rule.id);
-        return original !== undefined && original !== rule.selected;
+    const title = data.data.rules.title || profileShortName(profileId);
+    const readOnly = app.superuser === false;
+    const modifications = computeModifications(base, current, values);
+    const changedRules = modifications.filter(m => m.action === "select" || m.action === "unselect").length;
+    const changedValues = modifications.length - changedRules;
+    const unsaved = !statesEqual(current, saved);
+    const selectedCount = Object.values(current.selection).filter(Boolean).length;
+
+    function setRule(id: string, selected: boolean) {
+        setCurrent(prev => prev && { ...prev, selection: { ...prev.selection, [id]: selected } });
     }
 
-    /** Get all current modifications as TailoringModification[]. */
-    function getModifications(): TailoringModification[] {
-        const mods: TailoringModification[] = [];
-        for (const rule of rules) {
-            if (isModified(rule)) {
-                mods.push({
-                    rule_id: rule.id,
-                    action: rule.selected ? "select" : "unselect",
-                });
-            }
-        }
-        return mods;
+    function setRules(ids: string[], selected: boolean) {
+        setCurrent(prev => {
+            if (!prev)
+                return prev;
+            const selection = { ...prev.selection };
+            ids.forEach(id => { selection[id] = selected });
+            return { ...prev, selection };
+        });
     }
 
-    /** Count of modified rules. */
-    function modifiedCount(): number {
-        return rules.filter(r => isModified(r)).length;
+    function setValue(id: string, text: string) {
+        setCurrent(prev => prev && { ...prev, values: { ...prev.values, [id]: text } });
     }
 
-    // -----------------------------------------------------------------------
-    // Handlers
-    // -----------------------------------------------------------------------
-
-    function handleToggle(ruleId: string, enabled: boolean) {
-        setRules(prev => prev.map(r =>
-            r.id === ruleId ? { ...r, selected: enabled } : r
-        ));
-        setSuccessMsg(null);
-    }
-
-    async function handleSave() {
-        setSaving(true);
-        setSuccessMsg(null);
+    async function guarded(action: () => Promise<void>) {
+        setBusy(true);
         setError(null);
-
+        setNotice(null);
         try {
-            const mods = getModifications();
-            const result = await createTailoring(profileId, mods);
-            setTailoringPath(result.path);
-
-            // Persist tailoring path in config
-            await cockpit
-                    .file("/var/lib/cockpit-oscap/config.json", { superuser: "try" })
-                    .modify((content: string | null) => {
-                        const cfg: Config = content ? JSON.parse(content) : {};
-                        cfg[`tailoring_${profileId}`] = result.path;
-                        return JSON.stringify(cfg, null, 2);
-                    });
-            setConfig(prev => ({ ...prev, [`tailoring_${profileId}`]: result.path }));
-
-            // Update baseline to current state
-            const newBaseline = new Map<string, boolean>();
-            for (const r of rules) {
-                newBaseline.set(r.id, r.selected);
-            }
-            setBaseRules(newBaseline);
-
-            setSuccessMsg(_("Tailoring saved successfully."));
+            await action();
         } catch (err) {
-            setError(cockpit.format(_("Failed to save tailoring: $0"), String(err)));
+            setError(errorMessage(err));
         } finally {
-            setSaving(false);
+            setBusy(false);
         }
     }
 
-    async function handleExport() {
-        if (!tailoringPath) {
-            // Save first if no tailoring exists
-            await handleSave();
-        }
-
-        const pathToExport = tailoringPath ?? `${TAILORING_DIR}/${profileId}-tailoring.xml`;
-
-        try {
-            const content = await cockpit
-                    .file(pathToExport, { superuser: "try" })
-                    .read();
-            if (content === null || content === undefined) {
-                setError(_("Tailoring file not found. Save tailoring first."));
-                return;
+    function save() {
+        return guarded(async () => {
+            if (modifications.length === 0) {
+                if (tailoring)
+                    await deleteTailoring(profileId);
+                setTailoring(null);
+                setSaved(current);
+                setNotice({ variant: "info", title: _("No customizations left; scans will use the profile defaults.") });
+            } else {
+                const info = await createTailoring(profileId, modifications);
+                setTailoring(info);
+                setSaved(current);
+                setNotice({ variant: "success", title: _("Customizations saved. Scans of this profile now apply them.") });
             }
-
-            const blob = new Blob([content], { type: "application/xml" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = profileId.replace(/[^a-zA-Z0-9_-]/g, "_") + "-tailoring.xml";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } catch (err) {
-            setError(cockpit.format(_("Failed to export tailoring: $0"), String(err)));
-        }
+            app.bump();
+        });
     }
 
-    function handleImportClick() {
-        fileInputRef.current?.click();
+    async function removeCustomizations() {
+        const confirmed = await Dialogs.run(ConfirmDialog, {
+            title: _("Remove customizations?"),
+            body: _("The saved tailoring file will be deleted and the editor reset to the profile defaults."),
+            confirmText: _("Remove"),
+            isDanger: true,
+        });
+        if (!confirmed)
+            return;
+        await guarded(async () => {
+            await deleteTailoring(profileId);
+            setTailoring(null);
+            setSaved(base);
+            setCurrent(base);
+            setNotice({ variant: "info", title: _("Customizations removed.") });
+            app.bump();
+        });
     }
 
-    async function handleImportFile(event: React.ChangeEvent<HTMLInputElement>) {
+    async function importFile(event: React.ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
-        if (!file) return;
-
-        setWarningMsg(null);
-        setError(null);
-
-        try {
-            const text = await file.text();
-
-            // Write the imported file to a temp location so the bridge can parse it
-            const importPath = `${TAILORING_DIR}/imported-${Date.now()}.xml`;
-            await cockpit
-                    .file(importPath, { superuser: "try" })
-                    .replace(text);
-
-            const parsed = await parseTailoring(importPath);
-
-            // Warn on product mismatch
-            if (parsed.base_profile && parsed.base_profile !== profileId) {
-                setWarningMsg(cockpit.format(
-                    _("Imported tailoring is based on profile '$0' but you are editing '$1'. Rules were applied where possible."),
-                    parsed.base_profile,
-                    profileId,
-                ));
-            }
-
-            // Reset to baseline first, then apply imported modifications
-            const resetRules = rules.map(r => ({
-                ...r,
-                selected: baseRules.get(r.id) ?? r.selected,
-            }));
-            applyModifications(resetRules, parsed.modifications);
-
-            setSuccessMsg(_("Tailoring imported successfully."));
-        } catch (err) {
-            setError(cockpit.format(_("Failed to import tailoring: $0"), String(err)));
-        } finally {
-            // Reset file input so the same file can be re-imported
-            if (fileInputRef.current) {
-                fileInputRef.current.value = "";
-            }
-        }
+        event.target.value = "";
+        if (!file)
+            return;
+        await guarded(async () => {
+            const info = await importTailoring(profileId, await file.text());
+            const state = applyModifications(base, values, info.modifications);
+            setTailoring(info);
+            setSaved(state);
+            setCurrent(state);
+            setNotice(info.warning
+                ? { variant: "warning", title: info.warning }
+                : { variant: "success", title: cockpit.format(_("Imported customizations from $0."), file.name) });
+            app.bump();
+        });
     }
 
-    function handleReset() {
-        setRules(prev => prev.map(r => ({
-            ...r,
-            selected: baseRules.get(r.id) ?? r.selected,
-        })));
-        setSuccessMsg(null);
-        setWarningMsg(null);
+    function exportFile() {
+        if (tailoring)
+            downloadFile(`${safeFilename(profileShortName(profileId))}-tailoring.xml`, tailoring.tailoring_xml, "application/xml");
     }
 
-    function handleBack() {
-        cockpit.location.go(["profiles"]);
-    }
+    const shownRules = rules.filter(rule => {
+        const selected = current.selection[rule.id];
+        const changed = base.selection[rule.id] !== selected;
+        if (stateFilter === "selected" && !selected)
+            return false;
+        if (stateFilter === "unselected" && selected)
+            return false;
+        if (stateFilter === "changed" && !changed)
+            return false;
+        if (severityFilter !== "all" && normalizeSeverity(rule.severity) !== severityFilter)
+            return false;
+        if (groupFilter !== "all" && (rule.group || "") !== groupFilter)
+            return false;
+        return matchesSearch(search, rule.title, rule.id, rule.group);
+    });
+    const rulesById = new Map(rules.map(r => [r.id, r]));
 
-    // -----------------------------------------------------------------------
-    // Filtering and grouping
-    // -----------------------------------------------------------------------
-
-    function filteredRules(): RuleInfo[] {
-        return rules.filter(r => {
-            // Text search
-            if (searchText) {
-                const needle = searchText.toLowerCase();
-                const haystack = `${r.title} ${r.id} ${r.description}`.toLowerCase();
-                if (!haystack.includes(needle)) return false;
-            }
-
-            // Mode filter
-            switch (filterMode) {
-            case "modified":
-                return isModified(r);
-            case "enabled":
-                return r.selected;
-            case "disabled":
-                return !r.selected;
+    const sortRules = (rows: ListingTableRowProps[], direction: SortByDirection, index: number) => {
+        const key = (row: ListingTableRowProps) => rulesById.get(String(row.props?.key));
+        const sorted = [...rows].sort((a, b) => {
+            const ra = key(a);
+            const rb = key(b);
+            if (!ra || !rb)
+                return 0;
+            switch (index) {
+            case 0:
+                return Number(current.selection[rb.id]) - Number(current.selection[ra.id]);
+            case 2:
+                return compareSeverity(ra.severity, rb.severity);
+            case 3:
+                return ra.group.localeCompare(rb.group) || ra.title.localeCompare(rb.title);
             default:
-                return true;
+                return ra.title.localeCompare(rb.title);
             }
         });
-    }
-
-    /** Group filtered rules by category, preserving order. */
-    function groupedRules(): Map<string, RuleInfo[]> {
-        const groups = new Map<string, RuleInfo[]>();
-        for (const r of filteredRules()) {
-            const cat = deriveCategory(r.id);
-            const list = groups.get(cat);
-            if (list) {
-                list.push(r);
-            } else {
-                groups.set(cat, [r]);
-            }
-        }
-        return groups;
-    }
-
-    /** Count modified rules in a category. */
-    function categoryModifiedCount(categoryRules: RuleInfo[]): number {
-        return categoryRules.filter(r => isModified(r)).length;
-    }
-
-    function toggleCategory(category: string) {
-        setExpandedCategories(prev => {
-            const next = new Set(prev);
-            if (next.has(category)) {
-                next.delete(category);
-            } else {
-                next.add(category);
-            }
-            return next;
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // Filter mode labels
-    // -----------------------------------------------------------------------
-
-    const filterLabels: Record<FilterMode, string> = {
-        all: _("All rules"),
-        modified: _("Modified only"),
-        enabled: _("Enabled only"),
-        disabled: _("Disabled only"),
+        return direction === SortByDirection.asc ? sorted : sorted.reverse();
     };
 
-    // -----------------------------------------------------------------------
-    // Render
-    // -----------------------------------------------------------------------
+    const kebab = [
+        <DropdownItem key="import" isDisabled={readOnly || busy} onClick={() => fileInput.current?.click()}>
+            {_("Import tailoring file…")}
+        </DropdownItem>,
+        <DropdownItem key="export" isDisabled={!tailoring} onClick={exportFile}>
+            {_("Export tailoring file")}
+        </DropdownItem>,
+        <DropdownItem key="reset" isDisabled={modifications.length === 0} onClick={() => setCurrent(base)}>
+            {_("Reset to profile defaults")}
+        </DropdownItem>,
+        <DropdownItem key="remove" isDanger isDisabled={!tailoring || readOnly || busy} onClick={removeCustomizations}>
+            {_("Remove customizations")}
+        </DropdownItem>,
+    ];
 
-    if (loading) {
-        return (
-            <PageSection>
-                <Flex justifyContent={{ default: "justifyContentCenter" }}>
-                    <FlexItem>
-                        <Spinner size="xl" aria-label={_("Loading")} />
-                    </FlexItem>
-                </Flex>
-            </PageSection>
-        );
-    }
+    const rulesTable = (
+        <Stack hasGutter>
+            <StackItem>
+                <Toolbar id="tailoring-toolbar" inset={{ default: "insetNone" }}>
+                    <ToolbarContent>
+                        <ToolbarItem>
+                            <SearchInput
+id="tailoring-search" placeholder={_("Search rules")} value={search}
+                                         onChange={(_ev, value) => setSearch(value)} onClear={() => setSearch("")}
+                            />
+                        </ToolbarItem>
+                        <ToolbarItem>
+                            <SimpleSelect
+                                toggleProps={{ id: "tailoring-filter-state" }}
+                                options={[
+                                    { value: "all", content: _("All rules") },
+                                    { value: "selected", content: _("Enabled") },
+                                    { value: "unselected", content: _("Disabled") },
+                                    { value: "changed", content: _("Changed") },
+                                ]}
+                                selected={stateFilter}
+                                onSelect={value => setStateFilter(value as StateFilter)}
+                            />
+                        </ToolbarItem>
+                        <ToolbarItem>
+                            <SimpleSelect
+                                toggleProps={{ id: "tailoring-filter-severity" }}
+                                options={[
+                                    { value: "all", content: _("All severities") },
+                                    ...SEVERITIES.map(s => ({ value: s, content: severityLabel(s) })),
+                                ]}
+                                selected={severityFilter}
+                                onSelect={value => setSeverityFilter(value)}
+                            />
+                        </ToolbarItem>
+                        {groups.length > 1 && (
+                            <ToolbarItem>
+                                <SimpleSelect
+                                    toggleProps={{ id: "tailoring-filter-group" }}
+                                    options={[
+                                        { value: "all", content: _("All categories") },
+                                        ...groups.map(name => ({ value: name || "__none__", content: name || _("Uncategorized") })),
+                                    ]}
+                                    selected={groupFilter === "" ? "__none__" : groupFilter}
+                                    onSelect={value => setGroupFilter(value === "__none__" ? "" : value)}
+                                />
+                            </ToolbarItem>
+                        )}
+                        <ToolbarItem>
+                            <Button
+variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
+                                    onClick={() => setRules(shownRules.map(r => r.id), true)}
+                            >
+                                {_("Enable shown")}
+                            </Button>
+                        </ToolbarItem>
+                        <ToolbarItem>
+                            <Button
+variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
+                                    onClick={() => setRules(shownRules.map(r => r.id), false)}
+                            >
+                                {_("Disable shown")}
+                            </Button>
+                        </ToolbarItem>
+                        <ToolbarItem align={{ default: "alignEnd" }}>
+                            <span className="oscap-toolbar-count">
+                                {cockpit.format(_("$0 of $1 rules"), shownRules.length, rules.length)}
+                            </span>
+                        </ToolbarItem>
+                    </ToolbarContent>
+                </Toolbar>
+            </StackItem>
+            <StackItem>
+                <ListingTable
+                    id="tailoring-rules"
+                    aria-label={_("Profile rules")}
+                    variant="compact"
+                    columns={[
+                        { title: _("Enabled"), sortable: true, props: { modifier: "fitContent" } },
+                        { title: _("Rule"), sortable: true, props: { width: 50 } },
+                        { title: _("Severity"), sortable: true, props: { modifier: "fitContent" } },
+                        { title: _("Category"), sortable: true },
+                    ]}
+                    sortBy={{ index: 3, direction: SortByDirection.asc }}
+                    sortMethod={sortRules}
+                    emptyCaption={_("No rules match the current filters")}
+                    isEmptyStateInTable
+                    rows={shownRules.map(rule => {
+                        const selected = current.selection[rule.id];
+                        const changed = base.selection[rule.id] !== selected;
+                        return {
+                            props: { key: rule.id, ...changed && { className: "oscap-row-changed" } },
+                            columns: [
+                                {
+                                    title: (
+                                        <Switch
+                                            id={`rule-${safeFilename(ruleShortName(rule.id))}`}
+                                            aria-label={cockpit.format(_("Enable rule $0"), rule.title)}
+                                            isChecked={selected}
+                                            isDisabled={readOnly}
+                                            onChange={(_ev, checked) => setRule(rule.id, checked)}
+                                        />
+                                    ),
+                                    props: { className: "oscap-table-nowrap" },
+                                },
+                                {
+                                    title: (
+                                        <>
+                                            {rule.title || rule.id}
+                                            {changed && <> {" "}<Label color="purple" isCompact>{_("Changed")}</Label></>}
+                                        </>
+                                    ),
+                                },
+                                { title: <SeverityLabel severity={rule.severity} /> },
+                                { title: rule.group || _("Uncategorized") },
+                            ],
+                            expandedContent: <RuleDetails ruleId={rule.id} description={rule.description} />,
+                        };
+                    })}
+                />
+            </StackItem>
+        </Stack>
+    );
 
-    if (error && rules.length === 0) {
-        return (
-            <PageSection>
-                <Alert variant="danger" title={_("Failed to load rules")}>
-                    {error}
-                </Alert>
-                <Button
-                    variant="link"
-                    onClick={handleBack}
-                    style={{ marginTop: "var(--pf-t--global--spacer--sm)" }}
-                >
-                    {_("Back to Profiles")}
-                </Button>
-            </PageSection>
-        );
-    }
-
-    const groups = groupedRules();
-    const totalModified = modifiedCount();
+    const valuesTable = (
+        <ListingTable
+            id="tailoring-values"
+            aria-label={_("Profile values")}
+            variant="compact"
+            columns={[
+                { title: _("Value"), props: { width: 40 } },
+                { title: _("Setting"), props: { width: 40 } },
+                { title: _("Default"), props: { modifier: "fitContent" } },
+            ]}
+            emptyCaption={_("The rules enabled in this profile do not use adjustable values")}
+            rows={values.map(value => {
+                const text = current.values[value.id] ?? "";
+                const changed = base.values[value.id] !== text;
+                const matched = value.options.find(o => o.value === text);
+                const showInput = value.options.length === 0 || customValues.has(value.id) || !matched;
+                return {
+                    props: { key: value.id, ...changed && { className: "oscap-row-changed" } },
+                    columns: [
+                        {
+                            title: (
+                                <>
+                                    {value.title || value.id}
+                                    {changed && <> {" "}<Label color="purple" isCompact>{_("Changed")}</Label></>}
+                                </>
+                            ),
+                        },
+                        {
+                            title: (
+                                <Stack hasGutter className="oscap-value-input">
+                                    {value.options.length > 0 && (
+                                        <StackItem>
+                                            <FormSelect
+                                                id={`value-preset-${safeFilename(value.id)}`}
+                                                aria-label={cockpit.format(_("Preset for $0"), value.title)}
+                                                value={showInput ? CUSTOM : matched?.selector ?? CUSTOM}
+                                                isDisabled={readOnly}
+                                                onChange={(_ev, selector) => {
+                                                    const next = new Set(customValues);
+                                                    if (selector === CUSTOM) {
+                                                        next.add(value.id);
+                                                    } else {
+                                                        next.delete(value.id);
+                                                        const option = value.options.find(o => o.selector === selector);
+                                                        if (option)
+                                                            setValue(value.id, option.value);
+                                                    }
+                                                    setCustomValues(next);
+                                                }}
+                                            >
+                                                {value.options.map(option => (
+                                                    <FormSelectOption
+key={option.selector} value={option.selector}
+                                                                      label={`${option.selector.replace(/_/g, " ")} (${option.value})`}
+                                                    />
+                                                ))}
+                                                <FormSelectOption value={CUSTOM} label={_("Custom value…")} />
+                                            </FormSelect>
+                                        </StackItem>
+                                    )}
+                                    {showInput && (
+                                        <StackItem>
+                                            <TextInput
+                                                id={`value-${safeFilename(value.id)}`}
+                                                aria-label={value.title}
+                                                type={value.type === "number" ? "number" : "text"}
+                                                value={text}
+                                                isDisabled={readOnly}
+                                                onChange={(_ev, next) => setValue(value.id, next)}
+                                            />
+                                        </StackItem>
+                                    )}
+                                </Stack>
+                            ),
+                        },
+                        { title: <span className="oscap-mono">{value.default || "—"}</span> },
+                    ],
+                    expandedContent: (
+                        <div className="oscap-expanded-details">
+                            <Content component="p" className="oscap-prose">{value.description || _("No description")}</Content>
+                            <Content component="small" className="oscap-mono">{value.id}</Content>
+                        </div>
+                    ),
+                };
+            })}
+        />
+    );
 
     return (
-        <PageSection>
-            {/* Header */}
-            <Flex
-                justifyContent={{ default: "justifyContentSpaceBetween" }}
-                alignItems={{ default: "alignItemsCenter" }}
-                style={{ marginBottom: "var(--pf-t--global--spacer--md)" }}
-            >
-                <FlexItem>
-                    <Flex
-                        alignItems={{ default: "alignItemsCenter" }}
-                        spaceItems={{ default: "spaceItemsSm" }}
-                    >
-                        <FlexItem>
-                            <Button variant="link" isInline onClick={handleBack}>
-                                {_("Back to Profiles")}
-                            </Button>
-                        </FlexItem>
-                        <FlexItem>
-                            <Content component={ContentVariants.h1}>
-                                {_("Tailoring Editor")}
-                            </Content>
-                        </FlexItem>
-                    </Flex>
-                </FlexItem>
-                <FlexItem>
-                    <Flex spaceItems={{ default: "spaceItemsSm" }}>
-                        <FlexItem>
-                            <Button
-                                variant="primary"
-                                onClick={handleSave}
-                                isLoading={saving}
-                                isDisabled={saving || totalModified === 0}
-                            >
-                                {_("Save Tailoring")}
-                            </Button>
-                        </FlexItem>
-                        <FlexItem>
-                            <Button variant="secondary" onClick={handleExport}>
-                                {_("Export")}
-                            </Button>
-                        </FlexItem>
-                        <FlexItem>
-                            <Button variant="secondary" onClick={handleImportClick}>
-                                {_("Import")}
-                            </Button>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept=".xml"
-                                style={{ display: "none" }}
-                                onChange={handleImportFile}
-                            />
-                        </FlexItem>
-                        <FlexItem>
-                            <Button
-                                variant="plain"
-                                onClick={handleReset}
-                                isDisabled={totalModified === 0}
-                            >
-                                {_("Reset")}
-                            </Button>
-                        </FlexItem>
-                    </Flex>
-                </FlexItem>
-            </Flex>
-
-            {/* Alerts */}
-            {successMsg && (
-                <Alert
-                    variant="success"
-                    isInline
-                    title={successMsg}
-                    actionClose={<Button variant="plain" onClick={() => setSuccessMsg(null)}>{_("Dismiss")}</Button>}
-                    style={{ marginBottom: "var(--pf-t--global--spacer--sm)" }}
-                />
-            )}
-            {warningMsg && (
-                <Alert
-                    variant="warning"
-                    isInline
-                    title={warningMsg}
-                    actionClose={<Button variant="plain" onClick={() => setWarningMsg(null)}>{_("Dismiss")}</Button>}
-                    style={{ marginBottom: "var(--pf-t--global--spacer--sm)" }}
-                />
-            )}
-            {error && (
-                <Alert
-                    variant="danger"
-                    isInline
-                    title={error}
-                    actionClose={<Button variant="plain" onClick={() => setError(null)}>{_("Dismiss")}</Button>}
-                    style={{ marginBottom: "var(--pf-t--global--spacer--sm)" }}
-                />
-            )}
-
-            {/* Profile info bar */}
-            <Content
-                component={ContentVariants.small}
-                style={{ marginBottom: "var(--pf-t--global--spacer--sm)" }}
-            >
-                {cockpit.format(
-                    _("Profile: $0 \u00B7 $1 rules \u00B7 $2 modified"),
-                    profileId,
-                    rules.length,
-                    totalModified,
-                )}
-            </Content>
-
-            {/* Filter toolbar */}
-            <Toolbar>
-                <ToolbarContent>
-                    <ToolbarItem>
-                        <TextInput
-                            type="search"
-                            aria-label={_("Search rules")}
-                            placeholder={_("Search rules...")}
-                            value={searchText}
-                            onChange={(_event, value) => setSearchText(value)}
-                        />
-                    </ToolbarItem>
-                    <ToolbarItem>
-                        <Select
-                            isOpen={filterOpen}
-                            selected={filterMode}
-                            onSelect={(_event, value) => {
-                                setFilterMode(value as FilterMode);
-                                setFilterOpen(false);
-                            }}
-                            onOpenChange={setFilterOpen}
-                            toggle={(toggleRef) => (
-                                <MenuToggle
-                                    ref={toggleRef}
-                                    onClick={() => setFilterOpen(prev => !prev)}
-                                    isExpanded={filterOpen}
-                                >
-                                    {filterLabels[filterMode]}
-                                </MenuToggle>
-                            )}
-                        >
-                            <SelectList>
-                                <SelectOption value="all">{filterLabels.all}</SelectOption>
-                                <SelectOption value="modified">{filterLabels.modified}</SelectOption>
-                                <SelectOption value="enabled">{filterLabels.enabled}</SelectOption>
-                                <SelectOption value="disabled">{filterLabels.disabled}</SelectOption>
-                            </SelectList>
-                        </Select>
-                    </ToolbarItem>
-                </ToolbarContent>
-            </Toolbar>
-
-            {/* Rule categories */}
-            {groups.size === 0 && (
-                <Card>
-                    <CardBody>
-                        <Content component={ContentVariants.p}>
-                            {_("No rules match the current filter.")}
-                        </Content>
-                    </CardBody>
-                </Card>
-            )}
-
-            {Array.from(groups.entries()).map(([category, categoryRules]) => {
-                const catModCount = categoryModifiedCount(categoryRules);
-                const isExpanded = expandedCategories.has(category);
-
-                const toggleContent = (
-                    <Flex
-                        spaceItems={{ default: "spaceItemsSm" }}
-                        alignItems={{ default: "alignItemsCenter" }}
-                    >
-                        <FlexItem>
-                            <strong>{category}</strong>
-                        </FlexItem>
-                        <FlexItem>
-                            <Label isCompact color="blue">
-                                {cockpit.format(_("$0 rules"), categoryRules.length)}
-                            </Label>
-                        </FlexItem>
-                        {catModCount > 0 && (
-                            <FlexItem>
-                                <Label isCompact color="purple">
-                                    {cockpit.format(_("$0 modified"), catModCount)}
-                                </Label>
+        <>
+            <PageSection type="breadcrumb" hasBodyWrapper={false}>
+                <Breadcrumb>
+                    <BreadcrumbItem to="#/profiles" onClick={ev => { ev.preventDefault(); cockpit.location.go(["profiles"]) }}>
+                        {_("Profiles")}
+                    </BreadcrumbItem>
+                    <BreadcrumbItem isActive>{title}</BreadcrumbItem>
+                </Breadcrumb>
+            </PageSection>
+            <PageSection hasBodyWrapper={false} isFilled id="tailoring-editor">
+                <Stack hasGutter>
+                    <StackItem>
+                        <Flex justifyContent={{ default: "justifyContentSpaceBetween" }} alignItems={{ default: "alignItemsFlexStart" }}>
+                            <FlexItem grow={{ default: "grow" }}>
+                                <Content component="h2">{title}</Content>
+                                <Content component="p" className="oscap-muted">
+                                    {cockpit.format(_("$0 of $1 rules enabled"), selectedCount, rules.length)}
+                                    {modifications.length > 0 && (
+                                        <>
+                                            {" · "}
+                                            {cockpit.format(_("$0 and $1 customized"),
+                                                            cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", changedRules), changedRules),
+                                                            cockpit.format(cockpit.ngettext("$0 value", "$0 values", changedValues), changedValues))}
+                                        </>
+                                    )}
+                                    {unsaved && <> {" · "}<strong>{_("Unsaved changes")}</strong></>}
+                                </Content>
                             </FlexItem>
-                        )}
-                    </Flex>
-                );
-
-                return (
-                    <Card
-                        key={category}
-                        style={{ marginBottom: "var(--pf-t--global--spacer--sm)" }}
-                    >
-                        <CardBody style={{ padding: "var(--pf-t--global--spacer--sm)" }}>
-                            <ExpandableSection
-                                toggleContent={toggleContent}
-                                isExpanded={isExpanded}
-                                onToggle={() => toggleCategory(category)}
-                            >
-                                {categoryRules.map(rule => (
-                                    <RuleRow
-                                        key={rule.id}
-                                        rule={rule}
-                                        modified={isModified(rule)}
-                                        onToggle={handleToggle}
-                                    />
-                                ))}
-                            </ExpandableSection>
-                        </CardBody>
-                    </Card>
-                );
-            })}
-
-            {/* Footer with tailoring file path */}
-            <Content
-                component={ContentVariants.small}
-                style={{
-                    marginTop: "var(--pf-t--global--spacer--md)",
-                    textAlign: "center",
-                }}
-            >
-                {tailoringPath
-                    ? cockpit.format(_("Tailoring file: $0"), tailoringPath)
-                    : _("No tailoring file saved yet.")}
-            </Content>
-        </PageSection>
+                            <FlexItem>
+                                <div className="oscap-card-actions">
+                                    <Button
+id="tailoring-save" variant="primary" onClick={save} isLoading={busy}
+                                            isDisabled={!unsaved || busy || readOnly}
+                                    >
+                                        {_("Save")}
+                                    </Button>
+                                    <Button variant="secondary" onClick={() => setCurrent(saved)} isDisabled={!unsaved || busy}>
+                                        {_("Discard changes")}
+                                    </Button>
+                                    <KebabDropdown toggleButtonId="tailoring-actions" dropdownItems={kebab} />
+                                    <input ref={fileInput} type="file" accept=".xml,application/xml" hidden onChange={importFile} />
+                                </div>
+                            </FlexItem>
+                        </Flex>
+                    </StackItem>
+                    {notice && (
+                        <StackItem>
+                            <Alert
+variant={notice.variant} isInline title={notice.title}
+                                   actionClose={<AlertActionCloseButton onClose={() => setNotice(null)} />}
+                            />
+                        </StackItem>
+                    )}
+                    {error && (
+                        <StackItem>
+                            <ErrorAlert title={_("Operation failed")} error={error} onDismiss={() => setError(null)} />
+                        </StackItem>
+                    )}
+                    <StackItem>
+                        <Tabs
+id="tailoring-tabs" activeKey={tab} onSelect={(_ev, key) => setTab(key as "rules" | "values")}
+                              isSubtab aria-label={_("Profile sections")}
+                        >
+                            <Tab eventKey="rules" ouiaId="tailoring-tab-rules" title={<TabTitleText>{cockpit.format(_("Rules ($0)"), rules.length)}</TabTitleText>} />
+                            <Tab eventKey="values" ouiaId="tailoring-tab-values" title={<TabTitleText>{cockpit.format(_("Values ($0)"), values.length)}</TabTitleText>} />
+                        </Tabs>
+                    </StackItem>
+                    <StackItem>{tab === "rules" ? rulesTable : valuesTable}</StackItem>
+                </Stack>
+            </PageSection>
+        </>
     );
 };

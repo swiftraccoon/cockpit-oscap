@@ -6,18 +6,77 @@
 
 import testlib
 
+SSG_CONTENT_GLOB = "/usr/share/xml/scap/ssg/content/ssg-*-ds.xml"
+
 
 # Nondestructive tests all run in the same running VM. This allows them to run in Packit, Fedora, and
 # RHEL dist-git gating. They must not permanently change any file or configuration on the system in a
 # way that influences other tests.
 @testlib.nondestructive
 class TestOscap(testlib.MachineCase):
-    def testBasic(self):
+    def setUp(self) -> None:
+        super().setUp()
+        # the page is only offered by Cockpit when oscap is installed
+        if not self.machine.execute("command -v oscap || true").strip():
+            self.skipTest("oscap is not installed in this image")
+        self.has_content = bool(self.machine.execute(f"ls {SSG_CONTENT_GLOB} 2>/dev/null || true").strip())
+
+    def testBasic(self) -> None:
         b = self.browser
 
         self.login_and_go("/oscap")
-        # verify the compliance UI loaded
-        b.wait_in_text("body", "Compliance")
+
+        if not self.has_content:
+            # without SCAP Security Guide content the page explains what to install
+            b.wait_in_text(".pf-v6-c-empty-state", "No SCAP content found")
+            return
+
+        b.wait_visible("#oscap-tabs")
+        b.wait_visible("#run-scan")
+        # a fresh system has no results yet
+        b.wait_in_text("#page-overview", "No compliance scans yet")
+
+        b.click("#oscap-tabs button:contains('Profiles')")
+        b.wait_visible("#profiles-toolbar")
+        b.wait_visible(".oscap-profile-card")
+
+        b.click("#oscap-tabs button:contains('Results')")
+        b.wait_in_text("#page-results", "No scan results yet")
+
+        b.click("#oscap-tabs button:contains('Schedule')")
+        b.wait_visible("#schedule-status")
+        b.wait_visible("#schedule-form")
+
+    def testScanDialog(self) -> None:
+        b = self.browser
+
+        if not self.has_content:
+            self.skipTest("no SCAP Security Guide content in this image")
+
+        self.login_and_go("/oscap")
+        b.wait_visible("#oscap-tabs")
+        b.click("#run-scan")
+        b.wait_visible("#scan-dialog")
+        # the profile selector is populated from the datastream
+        b.wait_visible("#scan-start:not([disabled])")
+        b.click("#scan-dialog button:contains('Cancel')")
+        b.wait_not_present("#scan-dialog")
+
+    def testProfileEditor(self) -> None:
+        b = self.browser
+
+        if not self.has_content:
+            self.skipTest("no SCAP Security Guide content in this image")
+
+        self.login_and_go("/oscap#/profiles")
+        b.wait_visible(".oscap-profile-card")
+        b.click(".oscap-profile-card button:contains('Customize')")
+        b.wait_visible("#tailoring-editor")
+        b.wait_visible("#tailoring-rules")
+        # nothing is changed yet, so there is nothing to save
+        b.wait_visible("#tailoring-save[disabled]")
+        b.click("#tailoring-tabs button:contains('Values')")
+        b.wait_visible("#tailoring-values")
 
 
 if __name__ == '__main__':

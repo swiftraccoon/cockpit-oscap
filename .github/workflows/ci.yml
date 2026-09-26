@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (build, lint, typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package.json
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gettext make
+
+      - name: Install npm dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Build
+        run: make
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run eslint
+
+      - name: Stylelint
+        run: npm run stylelint
+
+      - name: Translation template
+        run: make po/oscap.pot
+
+  bridge:
+    name: Bridge (pytest, ruff, mypy)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install OpenSCAP and SCAP Security Guide (for the end-to-end test)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openscap-scanner ssg-base ssg-debian
+
+      - name: Install test tools
+        run: python -m pip install --upgrade pip pytest ruff mypy
+
+      - name: Ruff
+        run: ruff check src/oscap-bridge.py test-bridge/
+
+      - name: Mypy
+        if: matrix.python-version != '3.9'
+        run: mypy src/oscap-bridge.py
+
+      - name: Pytest
+        run: sudo --preserve-env=PATH env python -m pytest -v

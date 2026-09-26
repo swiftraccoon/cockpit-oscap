@@ -1,2 +1,190 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 @use "page.scss";
+@use "ct-card.scss";
+
+// ---------------------------------------------------------------------------
+// Application shell
+// ---------------------------------------------------------------------------
+
+.oscap-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pf-t--global--spacer--md);
+  flex-wrap: wrap;
+
+  .pf-v6-c-tabs {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+}
+
+.oscap-banner-section {
+  padding-block-end: 0;
+}
+
+// ---------------------------------------------------------------------------
+// Typography helpers
+// ---------------------------------------------------------------------------
+
+.oscap-muted {
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.oscap-prose {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.oscap-mono {
+  font-family: var(--pf-t--global--font--family--mono);
+  font-size: var(--pf-t--global--font--size--sm);
+  overflow-wrap: anywhere;
+}
+
+.oscap-code {
+  font-family: var(--pf-t--global--font--family--mono);
+  font-size: var(--pf-t--global--font--size--sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-block-size: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--pf-t--global--spacer--sm);
+  background-color: var(--pf-t--global--background--color--secondary--default);
+  border-radius: var(--pf-t--global--border--radius--small);
+}
+
+.oscap-inline-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pf-t--global--spacer--xs);
+  align-items: center;
+}
+
+// ---------------------------------------------------------------------------
+// Score display
+// ---------------------------------------------------------------------------
+
+.oscap-score {
+  font-weight: var(--pf-t--global--font--weight--heading--bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.oscap-score-lg {
+  font-size: var(--pf-t--global--font--size--4xl);
+}
+
+.oscap-score-md {
+  font-size: var(--pf-t--global--font--size--2xl);
+}
+
+.oscap-score-success {
+  color: var(--pf-t--global--color--status--success--default);
+}
+
+.oscap-score-warning {
+  color: var(--pf-t--global--color--status--warning--default);
+}
+
+.oscap-score-danger {
+  color: var(--pf-t--global--color--status--danger--default);
+}
+
+.oscap-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pf-t--global--spacer--xs);
+}
+
+.oscap-stat-label {
+  color: var(--pf-t--global--text--color--subtle);
+  font-size: var(--pf-t--global--font--size--sm);
+}
+
+.oscap-stat-value {
+  font-size: var(--pf-t--global--font--size--xl);
+  font-weight: var(--pf-t--global--font--weight--body--bold);
+}
+
+.oscap-stat-detail {
+  font-size: var(--pf-t--global--font--size--sm);
+  font-weight: var(--pf-t--global--font--weight--body--default);
+}
+
+.oscap-delta-up {
+  color: var(--pf-t--global--color--status--success--default);
+}
+
+.oscap-delta-down {
+  color: var(--pf-t--global--color--status--danger--default);
+}
+
+// ---------------------------------------------------------------------------
+// Cards
+// ---------------------------------------------------------------------------
+
+.oscap-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pf-t--global--spacer--sm);
+  align-items: center;
+}
+
+.oscap-card-actions-end {
+  margin-inline-start: auto;
+}
+
+.oscap-stack-tight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pf-t--global--spacer--xs);
+}
+
+.oscap-small {
+  font-size: var(--pf-t--global--font--size--sm);
+}
+
+.oscap-profile-card .pf-v6-c-card__title-text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pf-t--global--spacer--sm);
+  align-items: center;
+}
+
+.oscap-summary-card .pf-v6-c-card__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pf-t--global--spacer--xl);
+  align-items: center;
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+.oscap-table-nowrap {
+  white-space: nowrap;
+}
+
+.oscap-row-changed {
+  background-color: var(--pf-t--global--background--color--secondary--default);
+}
+
+.oscap-expanded-details {
+  padding: var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md) var(--pf-t--global--spacer--md);
+}
+
+.oscap-value-input {
+  max-inline-size: 18rem;
+}
+
+.oscap-toolbar-count {
+  color: var(--pf-t--global--text--color--subtle);
+  white-space: nowrap;
+}
+
+.oscap-empty-hint {
+  max-inline-size: 42rem;
+}

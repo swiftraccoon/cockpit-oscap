@@ -4,12 +4,12 @@ pkgrel=1
 pkgdesc='OpenSCAP compliance scanning for Cockpit'
 arch=('x86_64')
 url='https://github.com/swiftraccoon/cockpit-oscap'
-license=(LGPL)
+license=('LGPL-2.1-or-later')
 source=("SOURCE")
 sha256sums=('SKIP')
 
 package() {
-  depends=(cockpit)
+  depends=(cockpit openscap scap-security-guide python)
   cd $pkgname
   make DESTDIR="$pkgdir" install PREFIX=/usr
 }

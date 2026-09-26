@@ -1,316 +1,354 @@
-import React, { useEffect, useState } from "react";
-import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+/*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Overview: the latest score, the active profile, the scan schedule and the
+ * rules that need attention.
+ */
+
+import React from "react";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
-import { Card, CardBody, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
-import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
+import { Card, CardBody, CardFooter, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
+import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
 import {
     DescriptionList,
     DescriptionListDescription,
     DescriptionListGroup,
     DescriptionListTerm,
 } from "@patternfly/react-core/dist/esm/components/DescriptionList/index.js";
-import {
-    EmptyState,
-    EmptyStateActions,
-    EmptyStateBody,
-    EmptyStateFooter,
-} from "@patternfly/react-core/dist/esm/components/EmptyState/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
-import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
-import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
 import { Grid, GridItem } from "@patternfly/react-core/dist/esm/layouts/Grid/index.js";
-import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
+import CheckCircleIcon from "@patternfly/react-icons/dist/esm/icons/check-circle-icon";
+import ShieldAltIcon from "@patternfly/react-icons/dist/esm/icons/shield-alt-icon";
 import cockpit from "cockpit";
 
-import { detectBackend, loadConfig } from "../api";
-import { ScoreCard } from "../components/ScoreCard.jsx";
-import { RiskBadge } from "../components/RiskBadge.jsx";
-import type { BackendInfo, Config, RuleResultItem, ScanResult, RiskLevel } from "../types";
+import { EmptyStatePanel } from "cockpit-components-empty-state";
+import { ListingTable } from "cockpit-components-table";
+import * as timeformat from "timeformat";
+
+import { getConfig, getResult, listProfiles, listResults, manageTimer } from "../api";
+import { useApp } from "../app";
+import { useAsync } from "../app-hooks";
+import { CountLabels, ScanStatusLabel, ScoreLabel, ScoreValue, SeverityLabel, TailoredLabel } from "../components/labels";
+import { ErrorState, Loading } from "../components/states";
+import { compareSeverity, parseTimestamp, scoredTotal } from "../helpers";
+import type { RuleResultItem, TimerStatus } from "../types";
 
 const _ = cockpit.gettext;
 
-const RESULTS_DIR = "/var/lib/cockpit-oscap/results";
+const TOP_FAILED = 8;
+const RECENT_SCANS = 5;
 
-/** Maximum number of failed rules to show in the summary table. */
-const MAX_FAILED_RULES = 10;
+const Delta = ({ current, previous }: { current: number; previous: number }) => {
+    const delta = Math.round((current - previous) * 10) / 10;
+    if (delta === 0)
+        return <span className="oscap-muted">{_("No change since the previous scan")}</span>;
+    const className = delta > 0 ? "oscap-delta-up" : "oscap-delta-down";
+    const text = delta > 0
+        ? cockpit.format(_("Up $0 points since the previous scan"), delta)
+        : cockpit.format(_("Down $0 points since the previous scan"), Math.abs(delta));
+    return <span className={className}>{text}</span>;
+};
 
-/** Format a timestamp as a human-readable relative string. */
-function relativeTime(timestamp: string): string {
-    const then = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - then.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
-
-    if (diffMin < 1) return _("just now");
-    if (diffMin < 60) return cockpit.format(_("$0 min ago"), diffMin);
-    const diffHours = Math.floor(diffMin / 60);
-    if (diffHours < 24) return cockpit.format(_("$0h ago"), diffHours);
-    const diffDays = Math.floor(diffHours / 24);
-    return cockpit.format(_("$0d ago"), diffDays);
+function scheduleSummary(timer: TimerStatus | null): React.ReactNode {
+    if (!timer || !timer.installed)
+        return <Label color="grey" isCompact>{_("Not available")}</Label>;
+    if (timer.status === "active")
+        return <Label status="success" isCompact>{_("Enabled")}</Label>;
+    return <Label color="grey" isCompact>{_("Disabled")}</Label>;
 }
 
-/** Map severity strings from SCAP results to RiskLevel. */
-function severityToRisk(severity: string): RiskLevel {
-    switch (severity.toLowerCase()) {
-    case "high":
-        return "high";
-    case "medium":
-        return "medium";
-    case "low":
-        return "low";
-    default:
-        return "medium";
-    }
-}
-
-/** Load the newest JSON scan result from the results directory. */
-async function loadLatestScan(): Promise<ScanResult | null> {
-    try {
-        const listing = await cockpit.spawn(
-            ["ls", "-1t", RESULTS_DIR],
-            { superuser: "try", err: "ignore" }
-        );
-        const files = listing.trim().split("\n")
-                .filter(f => f.endsWith(".json"));
-        if (files.length === 0) return null;
-
-        const newest = files[0];
-        const content = await cockpit
-                .file(`${RESULTS_DIR}/${newest}`, { superuser: "try" })
-                .read();
-        if (content === null || content === undefined) return null;
-        return JSON.parse(content) as ScanResult;
-    } catch {
-        return null;
-    }
-}
-
-export const OverviewPage: React.FunctionComponent = () => {
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [backend, setBackend] = useState<BackendInfo | null>(null);
-    const [config, setConfig] = useState<Config | null>(null);
-    const [latestScan, setLatestScan] = useState<ScanResult | null>(null);
-
-    useEffect(() => {
-        let cancelled = false;
-
-        async function init() {
-            try {
-                const [backendInfo, configData, scanData] = await Promise.all([
-                    detectBackend(),
-                    loadConfig(),
-                    loadLatestScan(),
-                ]);
-                if (cancelled) return;
-
-                setBackend(backendInfo);
-                setConfig(configData);
-                setLatestScan(scanData);
-            } catch (err) {
-                if (cancelled) return;
-                setError(String(err));
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        }
-
-        init();
-        return () => { cancelled = true };
-    }, []);
-
-    /* Loading state */
-    if (loading) {
-        return (
-            <PageSection>
-                <Flex justifyContent={{ default: "justifyContentCenter" }}>
-                    <FlexItem>
-                        <Spinner size="xl" aria-label={_("Loading")} />
-                    </FlexItem>
-                </Flex>
-            </PageSection>
-        );
-    }
-
-    /* Error state */
-    if (error) {
-        return (
-            <PageSection>
-                <Alert variant="danger" title={_("Failed to load compliance data")}>
-                    {error}
-                </Alert>
-            </PageSection>
-        );
-    }
-
-    /* Missing scap-security-guide */
-    if (backend && !backend.content.present) {
-        return (
-            <PageSection>
-                <Alert variant="warning" title={_("SCAP content not found")}>
-                    {_("Install scap-security-guide to enable compliance scanning.")}
-                    <br />
-                    <code>sudo dnf install scap-security-guide</code>
-                </Alert>
-            </PageSection>
-        );
-    }
-
-    /* No scan results yet */
-    if (!latestScan) {
-        return (
-            <PageSection>
-                <EmptyState
-                    titleText={_("No scans yet")}
-                    headingLevel="h2"
-                >
-                    <EmptyStateBody>
-                        {_("Run your first compliance scan to see results here.")}
-                    </EmptyStateBody>
-                    <EmptyStateFooter>
-                        <EmptyStateActions>
-                            <Button
-                                variant="primary"
-                                onClick={() => cockpit.location.go(["scan"])}
-                            >
-                                {_("Run scan")}
-                            </Button>
-                        </EmptyStateActions>
-                    </EmptyStateFooter>
-                </EmptyState>
-            </PageSection>
-        );
-    }
-
-    /* Compute summary stats */
-    const passCount = latestScan.results.filter(r => r.result === "pass").length;
-    const failCount = latestScan.results.filter(r => r.result === "fail").length;
-    const errorCount = latestScan.results.filter(r => r.result === "error").length;
-    const score = latestScan.score;
-
-    const profileName = config?.active_profile ?? latestScan.profile_id ?? _("Unknown");
-    const hasTailoring = config !== null && "tailoring_path" in config && Boolean(config.tailoring_path);
-
-    const failedRules: RuleResultItem[] = latestScan.results.filter(
-        r => r.result === "fail" || r.result === "error"
+const When = ({ iso, fallback }: { iso: string; fallback: string }) => {
+    const date = parseTimestamp(iso);
+    if (!date)
+        return <span>{fallback}</span>;
+    return (
+        <>
+            {timeformat.dateTime(date)}
+            <span className="oscap-muted">{" · "}{timeformat.distanceToNow(date)}</span>
+        </>
     );
-    const displayedRules = failedRules.slice(0, MAX_FAILED_RULES);
+};
 
-    /* Backend info line */
-    const backendParts: string[] = [];
-    if (backend) {
-        backendParts.push(cockpit.format(_("Backend: OpenSCAP $0"), backend.oscap.version));
-        backendParts.push(cockpit.format(_("Content: $0"), backend.content.datastream_path.split("/").pop() ?? "ssg"));
+export const OverviewPage = () => {
+    const app = useApp();
+    const data = useAsync(async () => {
+        const [results, config, profiles, timer] = await Promise.all([
+            listResults(),
+            getConfig(),
+            listProfiles(),
+            manageTimer("status").catch(() => null),
+        ]);
+        const latest = results.length > 0 ? await getResult(results[0].id) : null;
+        return { results, config, profiles, timer, latest };
+    }, [app.version]);
+
+    if (data.loading && !data.data)
+        return <Loading />;
+    if (data.error || !data.data)
+        return <ErrorState title={_("Failed to load compliance status")} error={data.error} onRetry={() => data.reload()} />;
+
+    const { results, config, profiles, timer, latest } = data.data;
+    const activeProfile = profiles.find(p => p.id === config.active_profile);
+
+    if (!latest) {
+        return (
+            <EmptyStatePanel
+                icon={ShieldAltIcon}
+                title={_("No compliance scans yet")}
+                paragraph={
+                    <span className="oscap-empty-hint">
+                        {_("Run a scan to evaluate this system against a security profile such as CIS, STIG or PCI DSS. Results, guided remediation and scheduled scans all start here.")}
+                    </span>
+                }
+                action={
+                    <Button
+id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
+                            isDisabled={app.superuser === false || app.scanning}
+                    >
+                        {_("Run scan")}
+                    </Button>
+                }
+                secondary={
+                    <Button variant="link" onClick={() => cockpit.location.go(["profiles"])}>
+                        {_("Browse profiles")}
+                    </Button>
+                }
+            />
+        );
     }
+
+    const previous = results.find(r => r.id !== latest.id && r.profile_id === latest.profile_id);
+    const scannedAt = parseTimestamp(latest.timestamp);
+    const failed: RuleResultItem[] = latest.results
+            .filter(r => r.result === "fail" || r.result === "error")
+            .sort((a, b) => (a.result === b.result ? compareSeverity(a.severity, b.severity) : a.result === "fail" ? -1 : 1));
+    const recent = results.slice(0, RECENT_SCANS);
 
     return (
-        <PageSection>
-            {/* Score cards row */}
-            <Grid hasGutter>
-                <GridItem sm={12} md={4}>
-                    <ScoreCard
-                        label={_("Active Profile")}
-                        value={profileName}
-                        subtext={hasTailoring ? _("Tailored") : undefined}
-                    />
-                </GridItem>
-                <GridItem sm={12} md={4}>
-                    <ScoreCard
-                        label={_("Last Scan")}
-                        value={new Date(latestScan.timestamp).toLocaleString()}
-                        subtext={relativeTime(latestScan.timestamp)}
-                    />
-                </GridItem>
-                <GridItem sm={12} md={4}>
-                    <ScoreCard
-                        label={_("Compliance Score")}
-                        value={cockpit.format("$0%", score.toFixed(1))}
-                        subtext={cockpit.format(
-                            _("$0 pass, $1 fail, $2 error"),
-                            passCount, failCount, errorCount
-                        )}
-                    />
-                </GridItem>
-            </Grid>
-
-            {/* Failed rules summary */}
-            {failedRules.length > 0 && (
-                <Card style={{ marginTop: "var(--pf-t--global--spacer--md)" }}>
-                    <CardTitle>{_("Failed Rules")}</CardTitle>
-                    <CardBody>
-                        <DescriptionList isHorizontal isCompact>
-                            {displayedRules.map(rule => (
-                                <DescriptionListGroup key={rule.rule_id}>
-                                    <DescriptionListTerm>
-                                        <Flex
-                                            spaceItems={{ default: "spaceItemsSm" }}
-                                            alignItems={{ default: "alignItemsCenter" }}
-                                        >
-                                            <FlexItem>
-                                                <Label
-                                                    color={rule.result === "error" ? "red" : "orangered"}
-                                                    isCompact
-                                                >
-                                                    {rule.result.toUpperCase()}
-                                                </Label>
-                                            </FlexItem>
-                                            <FlexItem>{rule.title}</FlexItem>
-                                        </Flex>
-                                    </DescriptionListTerm>
-                                    <DescriptionListDescription>
-                                        <RiskBadge level={severityToRisk(rule.severity)} />
-                                    </DescriptionListDescription>
-                                </DescriptionListGroup>
-                            ))}
-                        </DescriptionList>
-                        {failedRules.length > MAX_FAILED_RULES && (
-                            <Content
-                                component={ContentVariants.p}
-                                style={{ marginTop: "var(--pf-t--global--spacer--sm)" }}
-                            >
-                                <Button
-                                    variant="link"
-                                    isInline
-                                    onClick={() => cockpit.location.go(["results"])}
-                                >
-                                    {cockpit.format(
-                                        _("View all $0 failed rules"),
-                                        failedRules.length
+        <Stack hasGutter>
+            <StackItem>
+                <Grid hasGutter>
+                    <GridItem md={4}>
+                        <Card className="ct-card" id="overview-latest" isFullHeight>
+                            <CardTitle>{_("Latest scan")}</CardTitle>
+                            <CardBody>
+                                <Stack hasGutter>
+                                    <StackItem><ScoreValue score={latest.score} /></StackItem>
+                                    <StackItem>
+                                        <span className="oscap-inline-list">
+                                            <CountLabels counts={latest.counts} />
+                                            <ScanStatusLabel status={latest.status} />
+                                        </span>
+                                    </StackItem>
+                                    {previous && (
+                                        <StackItem><Delta current={latest.score} previous={previous.score} /></StackItem>
                                     )}
+                                    <StackItem>
+                                        <DescriptionList isCompact>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {latest.profile_title || latest.profile_id}
+                                                    {latest.tailored && <> {" "}<TailoredLabel /></>}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>{_("Scanned")}</DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {scannedAt ? <When iso={latest.timestamp} fallback="" /> : latest.timestamp}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                        </DescriptionList>
+                                    </StackItem>
+                                </Stack>
+                            </CardBody>
+                            <CardFooter>
+                                <Button variant="link" isInline onClick={() => cockpit.location.go(["results", latest.id])}>
+                                    {_("View results")}
                                 </Button>
-                            </Content>
-                        )}
-                    </CardBody>
-                </Card>
-            )}
-
-            {/* Scan Now button */}
-            <Flex
-                justifyContent={{ default: "justifyContentCenter" }}
-                style={{ marginTop: "var(--pf-t--global--spacer--md)" }}
-            >
-                <FlexItem>
-                    <Button
-                        variant="primary"
-                        onClick={() => cockpit.location.go(["scan"])}
-                    >
-                        {_("Scan Now")}
-                    </Button>
-                </FlexItem>
-            </Flex>
-
-            {/* Backend info footer */}
-            {backendParts.length > 0 && (
-                <Content
-                    component={ContentVariants.small}
-                    style={{
-                        marginTop: "var(--pf-t--global--spacer--md)",
-                        textAlign: "center",
-                    }}
-                >
-                    {backendParts.join(" \u00B7 ")}
+                            </CardFooter>
+                        </Card>
+                    </GridItem>
+                    <GridItem md={4}>
+                        <Card className="ct-card" id="overview-profile" isFullHeight>
+                            <CardTitle>{_("Active profile")}</CardTitle>
+                            <CardBody>
+                                {activeProfile
+                                    ? (
+                                        <Stack hasGutter>
+                                            <StackItem>
+                                                <div className="oscap-inline-list">
+                                                    <strong>{activeProfile.title}</strong>
+                                                    {activeProfile.tailoring_path && <TailoredLabel />}
+                                                </div>
+                                            </StackItem>
+                                            <StackItem>
+                                                <Content component="small">
+                                                    {cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", activeProfile.rule_count),
+                                                                    activeProfile.rule_count)}
+                                                    {" · "}
+                                                    {_("Used by scheduled scans")}
+                                                </Content>
+                                            </StackItem>
+                                        </Stack>
+                                    )
+                                    : (
+                                        <Content component="p" className="oscap-muted">
+                                            {_("No profile selected. Choose the security profile scheduled scans should use.")}
+                                        </Content>
+                                    )}
+                            </CardBody>
+                            <CardFooter className="oscap-card-actions">
+                                <Button variant="link" isInline onClick={() => cockpit.location.go(["profiles"])}>
+                                    {activeProfile ? _("Change") : _("Choose profile")}
+                                </Button>
+                                {activeProfile && (
+                                    <Button
+variant="link" isInline
+                                            onClick={() => cockpit.location.go(["profiles", activeProfile.id])}
+                                    >
+                                        {_("Customize")}
+                                    </Button>
+                                )}
+                            </CardFooter>
+                        </Card>
+                    </GridItem>
+                    <GridItem md={4}>
+                        <Card className="ct-card" id="overview-schedule" isFullHeight>
+                            <CardTitle>{_("Scheduled scans")}</CardTitle>
+                            <CardBody>
+                                <DescriptionList isCompact>
+                                    <DescriptionListGroup>
+                                        <DescriptionListTerm>{_("Status")}</DescriptionListTerm>
+                                        <DescriptionListDescription>{scheduleSummary(timer)}</DescriptionListDescription>
+                                    </DescriptionListGroup>
+                                    {timer?.status === "active" && (
+                                        <DescriptionListGroup>
+                                            <DescriptionListTerm>{_("Next run")}</DescriptionListTerm>
+                                            <DescriptionListDescription>
+                                                <When iso={timer.next_run} fallback={_("Not scheduled")} />
+                                            </DescriptionListDescription>
+                                        </DescriptionListGroup>
+                                    )}
+                                    {timer?.last_run && (
+                                        <DescriptionListGroup>
+                                            <DescriptionListTerm>{_("Last run")}</DescriptionListTerm>
+                                            <DescriptionListDescription>
+                                                <When iso={timer.last_run} fallback={_("Never")} />
+                                            </DescriptionListDescription>
+                                        </DescriptionListGroup>
+                                    )}
+                                </DescriptionList>
+                            </CardBody>
+                            <CardFooter>
+                                <Button variant="link" isInline onClick={() => cockpit.location.go(["schedule"])}>
+                                    {_("Configure")}
+                                </Button>
+                            </CardFooter>
+                        </Card>
+                    </GridItem>
+                </Grid>
+            </StackItem>
+            <StackItem>
+                <Grid hasGutter>
+                    <GridItem md={8}>
+                        <Card className="ct-card" id="overview-failed" isFullHeight>
+                            <CardTitle>
+                                {failed.length > 0
+                                    ? cockpit.format(cockpit.ngettext("$0 rule needs attention", "$0 rules need attention", failed.length),
+                                                     failed.length)
+                                    : _("Rules needing attention")}
+                            </CardTitle>
+                            <CardBody>
+                                {failed.length === 0
+                                    ? (
+                                        <EmptyStatePanel
+                                            icon={CheckCircleIcon}
+                                            title={_("All evaluated rules passed")}
+                                            paragraph={cockpit.format(
+                                                cockpit.ngettext("$0 rule was evaluated.", "$0 rules were evaluated.",
+                                                                 scoredTotal(latest.counts)),
+                                                scoredTotal(latest.counts))}
+                                        />
+                                    )
+                                    : (
+                                        <ListingTable
+                                            aria-label={_("Failed rules")}
+                                            variant="compact"
+                                            columns={[_("Severity"), _("Rule"), _("Category")]}
+                                            onRowClick={() => cockpit.location.go(["results", latest.id])}
+                                            rows={failed.slice(0, TOP_FAILED).map(rule => ({
+                                                props: { key: rule.rule_id },
+                                                columns: [
+                                                    <SeverityLabel key="severity" severity={rule.severity} />,
+                                                    rule.title || rule.rule_id,
+                                                    rule.group || _("Uncategorized"),
+                                                ],
+                                            }))}
+                                        />
+                                    )}
+                            </CardBody>
+                            {failed.length > 0 && (
+                                <CardFooter>
+                                    <Button variant="link" isInline onClick={() => cockpit.location.go(["results", latest.id])}>
+                                        {failed.length > TOP_FAILED
+                                            ? cockpit.format(_("View all $0 rules"), failed.length)
+                                            : _("View results and remediate")}
+                                    </Button>
+                                </CardFooter>
+                            )}
+                        </Card>
+                    </GridItem>
+                    <GridItem md={4}>
+                        <Card className="ct-card" id="overview-recent" isFullHeight>
+                            <CardTitle>{_("Recent scans")}</CardTitle>
+                            <CardBody>
+                                <ListingTable
+                                    aria-label={_("Recent scans")}
+                                    variant="compact"
+                                    showHeader={false}
+                                    columns={[_("Scan"), { title: _("Score"), props: { modifier: "fitContent" } }]}
+                                    onRowClick={(_ev, row) => cockpit.location.go(["results", String(row.props?.key)])}
+                                    rows={recent.map(summary => {
+                                        const date = parseTimestamp(summary.timestamp);
+                                        return {
+                                            props: { key: summary.id },
+                                            columns: [
+                                                {
+                                                    title: (
+                                                        <div className="oscap-stack-tight">
+                                                            <span className="oscap-table-nowrap">
+                                                                {date ? timeformat.dateTimeNoYear(date) : summary.timestamp}
+                                                            </span>
+                                                            <span className="oscap-muted oscap-small">
+                                                                {summary.profile_title || summary.profile_id}
+                                                            </span>
+                                                        </div>
+                                                    ),
+                                                },
+                                                { title: <ScoreLabel score={summary.score} /> },
+                                            ],
+                                        };
+                                    })}
+                                />
+                            </CardBody>
+                            <CardFooter>
+                                <Button variant="link" isInline onClick={() => cockpit.location.go(["results"])}>
+                                    {_("All results")}
+                                </Button>
+                            </CardFooter>
+                        </Card>
+                    </GridItem>
+                </Grid>
+            </StackItem>
+            <StackItem>
+                <Content component="small" className="oscap-muted">
+                    {cockpit.format(_("OpenSCAP $0 · $1"), app.backend.oscap?.version ?? "",
+                                    app.backend.content.datastream_path.split("/").pop() ?? "")}
+                    {app.backend.content.os.pretty_name && ` · ${app.backend.content.os.pretty_name}`}
                 </Content>
-            )}
-        </PageSection>
+            </StackItem>
+        </Stack>
     );
 };

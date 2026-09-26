@@ -2,22 +2,28 @@
 <component type="addon">
   <id>org.cockpit_project.oscap</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <name>Cockpit Compliance</name>
+  <project_license>LGPL-2.1-or-later</project_license>
+  <name>Compliance</name>
   <summary>OpenSCAP compliance scanning for Cockpit</summary>
   <description>
     <p>
-      OpenSCAP compliance scanning and remediation integrated into Cockpit.
-      Run SCAP security profiles, review scan results, apply remediations,
-      customize profiles with tailoring, and schedule automated scans — all
-      from the Cockpit web console.
+      Evaluate the system against SCAP Security Guide profiles such as CIS,
+      STIG, PCI DSS or ANSSI directly from the Cockpit web console.
     </p>
+    <ul>
+      <li>Run scans with live progress and browse every rule result</li>
+      <li>Customize profiles by enabling rules and adjusting values (XCCDF tailoring)</li>
+      <li>Review and apply generated remediation, then re-scan to verify</li>
+      <li>Schedule unattended scans with a systemd timer</li>
+      <li>Download HTML reports and ARF results</li>
+    </ul>
   </description>
   <extends>org.cockpit_project.cockpit</extends>
   <launchable type="cockpit-manifest">oscap</launchable>
   <url type="homepage">https://github.com/swiftraccoon/cockpit-oscap</url>
   <url type="bugtracker">https://github.com/swiftraccoon/cockpit-oscap/issues</url>
-  <update_contact>cockpit-devel_AT_lists.fedorahosted.org</update_contact>
-  <developer id="org.cockpit-project">
-    <name>Cockpit Project</name>
+  <update_contact>https://github.com/swiftraccoon/cockpit-oscap/issues</update_contact>
+  <developer id="io.github.swiftraccoon">
+    <name>swiftraccoon</name>
   </developer>
 </component>
