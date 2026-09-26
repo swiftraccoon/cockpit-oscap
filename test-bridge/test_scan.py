@@ -190,7 +190,7 @@ def test_rule_history_follows_one_rule_across_a_profiles_scans(run_bridge, bridg
     assert [h["id"][:10] for h in by_content] == ["2026-04-05", "2026-04-02", "2026-04-01"]
     assert history[0]["timestamp"] == "2026-04-06T00:00:00+00:00"
     limited = run_bridge("rule-history", RULE_ROOT_LOGIN, PROFILE_BASE, "--limit", "2")
-    assert [h["id"][:10] for h in limited] == ["2026-04-05", "2026-04-02"]
+    assert [h["id"][:10] for h in limited] == ["2026-04-06", "2026-04-05"]
     assert run_bridge("rule-history", RULE_ROOT_LOGIN, "xccdf_org.test.content_profile_nope") == []
     assert "error" in run_bridge("rule-history", RULE_ROOT_LOGIN, expect_rc=1)
     assert "error" in run_bridge("rule-history", "bad id", PROFILE_BASE, expect_rc=1)
