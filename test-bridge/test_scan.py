@@ -123,6 +123,8 @@ def test_prune_results_keeps_newest(bridge):
     # the newest scan was remediated twice more: more runs than the retention count are kept
     write_run("2026-04-11T000000-2026-04-05T000000-base")
     write_run("2026-04-12T000000-2026-04-05T000000-base")
+    # a run of a scan that was removed behind the bridge's back goes as well
+    write_run("2026-04-13T000000-2026-03-01T000000-base")
     bridge.prune_results(KEEP)
     remaining = sorted(p.name for p in bridge.RESULTS_DIR.iterdir())
     assert remaining == ["2026-04-04T000000-base.arf.xml", "2026-04-04T000000-base.json",
@@ -135,11 +137,20 @@ def test_prune_results_keeps_newest(bridge):
                          "2026-04-12T000000-2026-04-05T000000-base", "2026-04-12T000000-2026-04-05T000000-base"]
 
 
-def test_atomic_write_sets_mode_before_the_file_appears(bridge, tmp_path):
+def test_atomic_write_sets_mode_before_the_file_appears(bridge, tmp_path, monkeypatch):
     tmp_path = tmp_path / "written"  # created by the write itself
+    modes_at_rename = []
+    real_replace = bridge.Path.replace
+
+    def observed_replace(self, target):
+        modes_at_rename.append(oct(self.stat().st_mode & 0o777))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(bridge.Path, "replace", observed_replace)
     secret = tmp_path / "record.json"
     bridge._atomic_write(secret, "{}", mode=0o600)
     assert oct(secret.stat().st_mode & 0o777) == "0o600"
+    assert modes_at_rename == ["0o600"]  # never world-readable, not even for a moment
     public = tmp_path / "result.json"
     bridge._atomic_write(public, "{}")
     assert oct(public.stat().st_mode & 0o777) == "0o644"

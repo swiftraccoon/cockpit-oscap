@@ -106,12 +106,16 @@ function computeModifications(base: EditorState, current: EditorState, values: V
     return mods;
 }
 
-/** A value as the review dialog shows it: its option name when it is one of the content's choices. */
-function describeValue(value: ValueInfo | undefined, text: string): string {
-    if (text === "")
-        return _("(empty)");
-    const option = value?.options.find(o => o.value === text);
-    return option ? `${option.selector.replace(/_/g, " ")} (${text})` : JSON.stringify(text);
+/**
+ * A value as the review dialog shows it: by option name when it is one of the content's choices
+ * (the chosen selector when known, else the only option with that value), quoted otherwise.
+ */
+function describeValue(value: ValueInfo | undefined, text: string, selector?: string): string {
+    const candidates = value?.options.filter(o => o.value === text) ?? [];
+    const option = selector ? candidates.find(o => o.selector === selector) : candidates.length === 1 ? candidates[0] : undefined;
+    if (option)
+        return `${option.selector.replace(/_/g, " ")} (${text || _("empty")})`;
+    return text === "" ? _("(empty)") : JSON.stringify(text);
 }
 
 /** One line per pending customization, for the review dialog. */
@@ -128,12 +132,14 @@ function describeModifications(mods: TailoringModification[], rules: RuleInfo[],
             };
         }
         const value = valuesById.get(mod.idref);
+        const before = base.values[mod.idref] ?? "";
         return {
             key: mod.idref,
             item: value?.title || mod.idref,
             change: cockpit.format(_("Value changed from $0 to $1"),
-                                   describeValue(value, base.values[mod.idref] ?? ""),
-                                   describeValue(value, current.values[mod.idref] ?? "")),
+                                   // the content's own selector names the untouched value
+                                   describeValue(value, before, value && before === value.value ? value.selector : undefined),
+                                   describeValue(value, current.values[mod.idref] ?? "", mod.selector)),
         };
     });
 }

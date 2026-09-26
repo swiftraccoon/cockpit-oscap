@@ -1474,22 +1474,30 @@ def prune_results(max_results: int) -> None:
         return
     ids = sorted({p.name[:-len(".json")] for p in RESULTS_DIR.glob("*.json")
                   if RESULT_ID_RE.match(p.name[:-len(".json")])})
-    for old in ids[:-max_results] if max_results > 0 else []:
-        for path in (RESULTS_DIR / f"{old}.json", RESULTS_DIR / f"{old}.arf.xml"):
-            path.unlink(missing_ok=True)
-        # the audit trail follows its scan: runs of a kept result stay, however many there are
-        _delete_remediations(old)
+    kept = set(ids[-max_results:]) if max_results > 0 else set(ids)
+    for old in ids:
+        if old not in kept:
+            for path in (RESULTS_DIR / f"{old}.json", RESULTS_DIR / f"{old}.arf.xml"):
+                path.unlink(missing_ok=True)
+    # the audit trail follows its scan: runs of a kept result stay, however many there are, while
+    # runs of a pruned one go, as do runs whose result vanished behind the bridge's back
+    _remove_remediations(lambda result_id: result_id not in kept)
 
 
-def _delete_remediations(result_id: str) -> None:
-    """Remove the scripts and audit records of every remediation run of a result."""
+def _remove_remediations(gone: Callable[[str], bool]) -> None:
+    """Remove the scripts and audit records of the runs whose result id ``gone`` accepts."""
     if not REMEDIATION_DIR.is_dir():
         return
     for script in REMEDIATION_DIR.glob("*.sh"):
         match = _REMEDIATION_NAME_RE.match(script.stem)
-        if match and match.group("result") == result_id:
+        if match and gone(match.group("result")):
             script.unlink(missing_ok=True)
             record_path_for(script).unlink(missing_ok=True)
+
+
+def _delete_remediations(result_id: str) -> None:
+    """Remove the scripts and audit records of every remediation run of a result."""
+    _remove_remediations(lambda candidate: candidate == result_id)
 
 
 def cmd_list_results(_args: list[str]) -> None:

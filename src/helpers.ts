@@ -141,7 +141,6 @@ export function withMember<T>(set: Set<T>, member: T, present: boolean): Set<T> 
     return next;
 }
 
-/** "45 seconds", "2 minutes", "1 hour 5 minutes": how long something took, coarsely. */
 /**
  * One [base profile id, title] pair per profile that has been scanned, sorted by title. The title comes
  * from the newest scan without customizations when there is one, so a tailored name does not stand
@@ -161,6 +160,7 @@ export function profileChoices(summaries: ResultSummary[]): [string, string][] {
             .sort((a, b) => a[1].localeCompare(b[1]));
 }
 
+/** "45 seconds", "2 minutes", "1 hour 5 minutes": how long something took, coarsely. */
 export function formatDuration(seconds: number): string {
     const total = Math.max(0, Math.round(seconds));
     if (total < 60)

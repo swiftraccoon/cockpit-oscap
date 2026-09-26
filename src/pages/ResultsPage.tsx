@@ -4,7 +4,7 @@
  * Results: the history of scans kept on this system.
  */
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
 import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
@@ -75,6 +75,14 @@ export const ResultsPage = () => {
     const [selected, setSelected] = useState<Set<string>>(() => new Set());
     const [profileFilter, setProfileFilter] = useState("all");
 
+    const profileOptions = useMemo(() => profileChoices(results.data ?? []), [results.data]);
+    // a filter whose profile has no scans left (all deleted) is forgotten, not kept for a later scan
+    const filterGone = profileFilter !== "all" && (profileOptions.length < 2 || !profileOptions.some(([id]) => id === profileFilter));
+    useEffect(() => {
+        if (filterGone)
+            setProfileFilter("all");
+    }, [filterGone]);
+
     if (results.loading && !results.data)
         return <Loading />;
     if (results.error || !results.data)
@@ -122,9 +130,7 @@ variant="primary" onClick={() => app.runScan()}
             await guarded(async () => { await deleteResult(summary.id); app.bump() });
     }
 
-    const profileOptions = profileChoices(all);
-    // a filter whose profile has no scans left (all deleted) falls back to every profile
-    const activeFilter = profileOptions.length > 1 && profileOptions.some(([id]) => id === profileFilter) ? profileFilter : "all";
+    const activeFilter = filterGone ? "all" : profileFilter;
     const shown = all.filter(s => (activeFilter === "all" || s.base_profile_id === activeFilter) &&
         matchesSearch(search, s.profile_title, s.profile_id, s.id));
     const byId = new Map(shown.map(s => [s.id, s]));

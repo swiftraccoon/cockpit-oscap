@@ -131,9 +131,10 @@ class TestOscap(testlib.MachineCase):
         # saving a customization writes under /var/lib/cockpit-oscap; leave the VM as it was
         self.restore_dir("/var/lib/cockpit-oscap")
 
+        # the content ships several profiles; work on the first card throughout
         self.login_and_go("/oscap#/profiles")
-        b.wait_visible(".oscap-profile-card")
-        b.click(".oscap-profile-card button:contains('Customize')")
+        b.wait_visible(".oscap-profile-card:first-of-type")
+        b.click(".oscap-profile-card:first-of-type button:contains('Customize')")
         b.wait_visible("#tailoring-editor")
         b.wait_visible("#tailoring-rules")
         # nothing is changed yet, so there is nothing to save
@@ -157,8 +158,8 @@ class TestOscap(testlib.MachineCase):
 
         # the profile card shows the customization, and can drop it again
         b.click("nav.pf-v6-c-breadcrumb a:contains('Profiles')")
-        b.wait_visible(".oscap-profile-card .pf-v6-c-label:contains('Customized')")
-        b.click(".oscap-profile-card:contains('Customized') button[id^='profile-actions-']")
+        b.wait_visible(".oscap-profile-card:first-of-type .pf-v6-c-label:contains('Customized')")
+        b.click(".oscap-profile-card:first-of-type button[id^='profile-actions-']")
         b.click(".pf-v6-c-menu__item:contains('Remove customizations')")
         b.click(".pf-v6-c-modal-box button:contains('Remove')")
         b.wait_not_present(".oscap-profile-card .pf-v6-c-label:contains('Customized')")

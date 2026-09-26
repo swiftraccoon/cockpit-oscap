@@ -165,7 +165,8 @@ const AppShell = () => {
         let cancelled = false;
         listResults()
                 .then(results => { if (!cancelled) setSummaries(results); })
-                .catch(() => undefined);
+                // nothing known yet: still publish, a failed scan needs no results to be flagged
+                .catch(() => { if (!cancelled) setSummaries(prev => prev ?? []); });
         return () => { cancelled = true };
     }, [info, version]);
 

@@ -277,7 +277,8 @@ def test_list_remediations_without_read_access(bridge, monkeypatch):
     real_open = bridge.Path.open
 
     def as_unprivileged(self, *args, **kwargs):
-        if self.parent == bridge.REMEDIATION_DIR:
+        # only files that exist are denied: the legacy script has no record, so its script is what fails
+        if self.parent == bridge.REMEDIATION_DIR and self.exists():
             raise PermissionError(13, "Permission denied", str(self))
         return real_open(self, *args, **kwargs)
 
