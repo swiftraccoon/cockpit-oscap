@@ -174,6 +174,26 @@ export function formatDuration(seconds: number): string {
     return rest === 0 ? hoursText : cockpit.format("$0 $1", hoursText, cockpit.format(cockpit.ngettext("$0 minute", "$0 minutes", rest), rest));
 }
 
+interface SeriesMember { base_profile_id: string; datastream: string }
+
+/** Scans of the same profile against the same content form a series; only those compare. */
+export function sameSeries(a: SeriesMember, b: SeriesMember): boolean {
+    return a.base_profile_id === b.base_profile_id && sameContent(a.datastream, b.datastream);
+}
+
+/**
+ * The scans a result can be compared with: complete scans of its series taken before it, newest
+ * first (so the first one is the immediately preceding scan).
+ */
+export function comparableScans(result: SeriesMember & { id: string; timestamp: string },
+    summaries: ResultSummary[]): ResultSummary[] {
+    const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
+    return summaries
+            .filter(s => s.id !== result.id && sameSeries(s, result) && s.status === "complete" &&
+                (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at)
+            .sort((a, b) => (parseTimestamp(b.timestamp)?.getTime() ?? 0) - (parseTimestamp(a.timestamp)?.getTime() ?? 0));
+}
+
 /** Results from before the content path was recorded (empty) belong to every series. */
 export function sameContent(a: string, b: string): boolean {
     return !a || !b || a === b;

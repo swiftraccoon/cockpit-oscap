@@ -20,7 +20,8 @@ A complete rewrite of the plugin as an end-to-end compliance workflow.
   configurable count.
 - Results history with filtering by profile, bulk deletion, per-rule details on
   demand, filters by result, severity and category, comparison with the
-  previous scan, HTML report, ARF and CSV downloads, and deep links to a rule.
+  previous scan or any earlier one, HTML report, ARF and CSV downloads, and
+  deep links to a rule.
 - "Exclude from profile" on a failed rule, with a mandatory justification;
   every later scan lists the rules its customization excluded and why.
 - Guided remediation with per-rule risk classification, one fix at a time,

@@ -52,7 +52,9 @@ import {
     SEVERITIES,
     compareSeverity,
     downloadFile,
+    comparableScans,
     errorMessage,
+    formatScore,
     matchesSearch,
     normalizeResult,
     normalizeSeverity,
@@ -61,7 +63,6 @@ import {
     ruleChange,
     ruleShortName,
     safeFilename,
-    sameContent,
     scoredTotal,
     severityLabel,
 } from "../helpers";
@@ -91,25 +92,6 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
 }
 
 /** Scans of the same base profile against the same content form one series, customized or not. */
-function sameSeries(a: { base_profile_id: string; datastream: string }, b: { base_profile_id: string; datastream: string }) {
-    return a.base_profile_id === b.base_profile_id && sameContent(a.datastream, b.datastream);
-}
-
-/** The most recent completed scan of the same profile that ran before `result`, if any. */
-async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Promise<ScanResult | null> {
-    const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
-    // newest first, so the first older match is the immediately preceding scan
-    const before = summaries.find(s => s.id !== result.id && sameSeries(s, result) &&
-        s.status === "complete" && (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at);
-    if (!before)
-        return null;
-    try {
-        return await getResult(before.id);
-    } catch {
-        return null;
-    }
-}
-
 function runOutcome(run: RemediationRun): React.ReactNode {
     if (run.success === true)
         return <Label status="success" isCompact>{_("All fixes applied")}</Label>;
@@ -202,14 +184,27 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const { options } = usePageLocation();
     // a link straight to one rule (from the overview, or shared): expanded and scrolled into view
     const focusRule = typeof options.rule === "string" ? options.rule : null;
+    // the scan to compare with: an earlier one of the series picked by the user, else the one just before
+    const compareId = typeof options.compare === "string" ? options.compare : null;
     const data = useAsync(async () => {
         const [result, summaries, remediations] = await Promise.all([
             getResult(resultId),
             listResults().catch((): ResultSummary[] => []),
             listRemediations(resultId).catch((): RemediationRun[] => []),
         ]);
-        return { result, previous: await findPrevious(result, summaries), remediations };
+        return { result, candidates: comparableScans(result, summaries), remediations };
     }, [resultId, app.version]);
+    const candidates = useMemo(() => data.data?.candidates ?? [], [data.data]);
+    const comparedWith = candidates.find(s => s.id === compareId) ?? candidates[0] ?? null;
+    const comparison = useAsync(async () => {
+        if (!comparedWith)
+            return null;
+        try {
+            return await getResult(comparedWith.id);
+        } catch {
+            return null;
+        }
+    }, [comparedWith?.id]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
     const [severity, setSeverity] = useState("all");
@@ -219,7 +214,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const [expandedRules, setExpandedRules] = useState<RowRecord>({});
 
     const result = data.data?.result ?? null;
-    const previous = data.data?.previous ?? null;
+    const previous = comparison.data ?? null;
     const remediations = data.data?.remediations ?? [];
     // Once per deep link: expand the rule through the table's own toggle (its expansion state is
     // internal) and bring it into view
@@ -243,9 +238,9 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         () => new Map((previous?.results ?? []).map(r => [r.rule_id, r.result])), [previous]);
     // the comparison filter only makes sense while there is something to compare with
     useEffect(() => {
-        if (!previous && status === "changed")
+        if (candidates.length === 0 && status === "changed")
             setStatus("all");
-    }, [previous, status]);
+    }, [candidates, status]);
 
     if (data.loading && !result)
         return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
@@ -260,7 +255,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
 
     const loaded: ScanResult = result;
     const scannedAt = parseTimestamp(loaded.timestamp);
-    const previousAt = previous ? parseTimestamp(previous.timestamp) : null;
+    const scanLabel = (summary: { timestamp: string; score: number }) => {
+        const at = parseTimestamp(summary.timestamp);
+        return cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : summary.timestamp, formatScore(summary.score));
+    };
+    const compareWith = (id: string) => cockpit.location.go(["results", loaded.id], { ...options, compare: id });
     const changeOf = (rule: RuleResultItem) => ruleChange(previousResults.get(rule.rule_id), rule.result);
     const changes = { fixed: 0, regressed: 0, changed: 0 };
     if (previous) {
@@ -429,7 +428,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
                                 <Stat label={_("Results")}><CountLabels counts={result.counts} /></Stat>
                                 <Stat label={_("Status")}><ScanStatusLabel status={result.status} /></Stat>
                                 {previous && (
-                                    <Stat label={_("Since previous scan")}>
+                                    <Stat label={compareId ? _("Since the chosen scan") : _("Since previous scan")}>
                                         <span className="oscap-inline-list" id="result-changes">
                                             {changes.fixed > 0 && (
                                                 <Label status="success" isCompact>
@@ -458,9 +457,18 @@ variant="link" isInline className="oscap-stat-detail"
                                                     </Button>
                                                 )}
                                         </span>
-                                        <span className="oscap-muted oscap-stat-detail">
-                                            {cockpit.format(_("Compared with $0"),
-                                                            previousAt ? timeformat.dateTime(previousAt) : previous.timestamp)}
+                                        <span className="oscap-muted oscap-stat-detail oscap-compare">
+                                            {_("Compared with")}
+                                            {candidates.length > 1
+                                                ? (
+                                                    <SimpleSelect
+                                                        toggleProps={{ id: "result-compare", variant: "plainText", size: "sm" }}
+                                                        options={candidates.map(s => ({ value: s.id, content: scanLabel(s) }))}
+                                                        selected={previous.id}
+                                                        onSelect={compareWith}
+                                                    />
+                                                )
+                                                : <span id="result-compare">{scanLabel(previous)}</span>}
                                         </span>
                                     </Stat>
                                 )}

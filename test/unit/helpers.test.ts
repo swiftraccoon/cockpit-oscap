@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+    comparableScans,
     emptyCounts,
     formatDuration,
     formatScore,
@@ -112,6 +113,38 @@ describe("small helpers", () => {
         assert.deepEqual([...withMember(base, "b", true)], ["a", "b"]);
         assert.deepEqual([...withMember(base, "a", false)], []);
         assert.deepEqual([...base], ["a"]);  // untouched
+    });
+
+    it("offers the complete earlier scans of a series for comparison, newest first", () => {
+        const scan = (id: string, base: string, status = "complete", datastream = "/ds.xml") => ({
+            id,
+            // ids are compact, the recorded timestamps ISO 8601
+            timestamp: `${id.slice(0, 11)}${id.slice(11, 13)}:${id.slice(13, 15)}:${id.slice(15, 17)}+00:00`,
+            base_profile_id: base,
+            profile_title: base,
+            tailored: false,
+            profile_id: base,
+            datastream,
+            duration_seconds: 0,
+            score: 0,
+            counts: emptyCounts(),
+            total: 0,
+            status,
+            has_arf: true,
+        });
+        const current = scan("2026-04-05T000000-cis", "cis");
+        const summaries = [
+            scan("2026-04-06T000000-cis", "cis"),  // later: not a comparison
+            current,
+            scan("2026-04-03T000000-cis", "cis"),
+            scan("2026-04-04T000000-cis", "cis", "interrupted"),
+            scan("2026-04-04T000000-anssi", "anssi"),
+            scan("2026-04-02T000000-cis", "cis", "complete", "/other.xml"),
+            scan("2026-04-01T000000-cis", "cis", "complete", ""),  // content unknown: any series
+        ];
+        assert.deepEqual(comparableScans(current, summaries).map(s => s.id),
+                         ["2026-04-03T000000-cis", "2026-04-01T000000-cis"]);
+        assert.deepEqual(comparableScans(current, [current]), []);
     });
 
     it("names each scanned profile after its newest scan without customizations", () => {

@@ -185,6 +185,18 @@
   white-space: normal;
 }
 
+.oscap-compare {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pf-t--global--spacer--xs);
+  flex-wrap: wrap;
+}
+
+.oscap-compare .pf-v6-c-menu-toggle.pf-m-plain-text {
+  color: var(--pf-t--global--text--color--regular);
+  padding-inline: 0;
+}
+
 .oscap-remark-removed {
   text-decoration: line-through;
 }

@@ -103,7 +103,8 @@ Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailori
 React + PatternFly 6, reusing cockpit's shared components from `pkg/lib`
 (`ListingTable`, `EmptyStatePanel`, `SimpleSelect`, `dialogs`, `timeformat`,
 `superuser`, `notifications`). Routing via `cockpit.location`: `overview`, `profiles`,
-`profiles/<id>` (tailoring editor), `results`, `results/<id>`, `schedule`. Scanning is a
+`profiles/<id>` (tailoring editor), `results`, `results/<id>` (options `rule` to expand one
+rule, `compare` to pick the earlier scan compared with), `schedule`. Scanning is a
 dialog available from every tab (the old `scan` route redirects to `overview`).
 `AppContext` (`useApp()`) exposes backend info, a `version` counter pages reload on,
 `superuser` state and `runScan()`. The shell also publishes a Cockpit page status
