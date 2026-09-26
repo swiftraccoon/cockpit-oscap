@@ -215,7 +215,7 @@ def test_export_bundle_packs_everything_recorded_about_a_scan(run_bridge, bridge
         assert "results.arf.xml" in bundle.namelist()
         assert "tailoring.xml" not in bundle.namelist()
         readme = bundle.read("README.txt").decode()
-        assert "tailoring.xml: the ARF could not be read" in readme
+        assert "tailoring.xml: cannot read results file" in readme
         assert "report.html:" in readme
     # without the scanner's output the bundle still carries what is recorded, and says what is missing
     (bridge.RESULTS_DIR / f"{result_id}.arf.xml").unlink()

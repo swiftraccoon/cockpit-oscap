@@ -1,0 +1,25 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+
+html,
+body {
+  margin: 0;
+  block-size: 100%;
+  background: #fff;
+  font-family: system-ui, sans-serif;
+}
+
+#status {
+  margin: 0;
+  padding: 1rem 1.5rem;
+  color: #4d4d4d;
+}
+
+#status.error {
+  color: #b1380b;
+}
+
+#report {
+  border: 0;
+  inline-size: 100%;
+  block-size: 100%;
+}

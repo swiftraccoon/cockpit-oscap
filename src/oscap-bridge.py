@@ -1664,15 +1664,23 @@ def prune_results(max_results: int) -> None:
     _remove_remediations(lambda result_id: result_id not in kept)
 
 
+def _remediation_scripts(of_result: Callable[[str], bool] = lambda _result_id: True) -> list[tuple[str, Path]]:
+    """(result id, script) of every recorded remediation run whose result id ``of_result`` accepts."""
+    if not REMEDIATION_DIR.is_dir():
+        return []
+    scripts: list[tuple[str, Path]] = []
+    for script in sorted(REMEDIATION_DIR.glob("*.sh")):
+        match = _REMEDIATION_NAME_RE.match(script.stem)
+        if match and of_result(match.group("result")):
+            scripts.append((match.group("result"), script))
+    return scripts
+
+
 def _remove_remediations(gone: Callable[[str], bool]) -> None:
     """Remove the scripts and audit records of the runs whose result id ``gone`` accepts."""
-    if not REMEDIATION_DIR.is_dir():
-        return
-    for script in REMEDIATION_DIR.glob("*.sh"):
-        match = _REMEDIATION_NAME_RE.match(script.stem)
-        if match and gone(match.group("result")):
-            script.unlink(missing_ok=True)
-            record_path_for(script).unlink(missing_ok=True)
+    for _result_id, script in _remediation_scripts(gone):
+        script.unlink(missing_ok=True)
+        record_path_for(script).unlink(missing_ok=True)
 
 
 def _delete_remediations(result_id: str) -> None:
@@ -2289,6 +2297,15 @@ def parse_fix_script(script: str) -> list[FixRuleInfo]:
     return rules
 
 
+def _arf_tailoring(arf_path: str) -> ET.Element | None:
+    """The Tailoring element an ARF embeds (a scan run with a tailoring file records it), if any."""
+    try:
+        root = ET.parse(arf_path).getroot()  # noqa: S314
+    except (ET.ParseError, OSError) as exc:
+        raise BridgeError(f"cannot read results file: {exc}") from exc
+    return next(root.iter(TAG_TAILORING), None)
+
+
 def extract_arf_tailoring(arf_path: str) -> str | None:
     """Write the tailoring embedded in an ARF (if any) to a temporary file and return its path.
 
@@ -2296,11 +2313,7 @@ def extract_arf_tailoring(arf_path: str) -> str | None:
     xccdf generate fix`` cannot resolve the customized profile from the ARF alone, so
     the embedded copy (exactly what was evaluated) is handed back to it.
     """
-    try:
-        root = ET.parse(arf_path).getroot()  # noqa: S314
-    except (ET.ParseError, OSError) as exc:
-        raise BridgeError(f"cannot read results file: {exc}") from exc
-    tailoring = next(root.iter(TAG_TAILORING), None)
+    tailoring = _arf_tailoring(arf_path)
     if tailoring is None:
         return None
     fd, name = tempfile.mkstemp(prefix="cockpit-oscap-tailoring-", suffix=".xml")
@@ -2418,12 +2431,7 @@ class RemediationRun(TypedDict):
 def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
     """Every remediation run recorded under REMEDIATION_DIR, newest first (optionally for one result)."""
     runs: list[RemediationRun] = []
-    if not REMEDIATION_DIR.is_dir():
-        return runs
-    for script in REMEDIATION_DIR.glob("*.sh"):
-        match = _REMEDIATION_NAME_RE.match(script.stem)
-        if not match or (result_id and match.group("result") != result_id):
-            continue
+    for run_result_id, script in _remediation_scripts(lambda rid: not result_id or rid == result_id):
         # records and scripts are root-only: a read-only session sees no history rather than a wrong one
         try:
             record = _read_json_file(record_path_for(script), raise_permission=True) or {}
@@ -2461,8 +2469,8 @@ def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
                 planned = 0
         runs.append(RemediationRun(
             id=script.stem,
-            timestamp=timestamp or _normalize_timestamp(match.group("time")),
-            result_id=match.group("result"),
+            timestamp=timestamp or _normalize_timestamp(script.stem[:len("2026-01-01T000000")]),
+            result_id=run_result_id,
             script_path=str(script),
             success=success,
             planned=max(planned, len(outcomes)),
@@ -2579,34 +2587,33 @@ def _bundle_arf(bundle: zipfile.ZipFile, result: ScanResult, add: Callable[[str,
         notes.append("results.arf.xml: the scanner's output of this scan is no longer stored, "
                      "so there is no report.html and no tailoring.xml either")
         return
-    bundle.write(arf_path, "results.arf.xml")  # streamed, not slurped: ARFs run to tens of MB
-    members.append("results.arf.xml")
+    try:
+        bundle.write(arf_path, "results.arf.xml")  # streamed, not slurped: ARFs run to tens of MB
+        members.append("results.arf.xml")
+    except OSError as exc:
+        notes.append(f"results.arf.xml: the scanner's output could not be read ({exc}), "
+                     "so there is no report.html and no tailoring.xml either")
+        return
     try:
         add("report.html", generate_report(arf_path))
     except BridgeError as exc:
         notes.append(f"report.html: not rendered ({exc})")
-    if not result["tailored"]:
-        return
+    # the ARF says whether the scan was customized; older result files may not
     try:
-        tailoring = next(ET.parse(arf_path).getroot().iter(TAG_TAILORING), None)  # noqa: S314
-    except (ET.ParseError, OSError) as exc:
-        notes.append(f"tailoring.xml: the ARF could not be read ({exc})")
+        tailoring = _arf_tailoring(arf_path)
+    except BridgeError as exc:
+        notes.append(f"tailoring.xml: {exc}")
         return
-    if tailoring is None:
-        notes.append("tailoring.xml: the ARF does not carry the customization this scan applied")
-    else:
+    if tailoring is not None:
         add("tailoring.xml", _serialize_tailoring(tailoring))
+    elif result["tailored"]:
+        notes.append("tailoring.xml: the ARF does not carry the customization this scan applied")
 
 
 def _bundle_remediations(result_id: str, add: Callable[[str, str | bytes], None], notes: list[str]) -> None:
     """The scripts and records of every remediation run of the scan (root-only files)."""
-    if not REMEDIATION_DIR.is_dir():
-        return
     denied = False
-    for script in sorted(REMEDIATION_DIR.glob("*.sh")):
-        match = _REMEDIATION_NAME_RE.match(script.stem)
-        if not match or match.group("result") != result_id:
-            continue
+    for _result_id, script in _remediation_scripts(lambda rid: rid == result_id):
         for path in (script, record_path_for(script)):
             if not path.is_file():
                 continue
@@ -2624,7 +2631,8 @@ def export_bundle(result: ScanResult) -> tuple[str, bytes]:
     members: list[str] = []
     notes: list[str] = []
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+    # strict_timestamps off: a restored ARF may carry an mtime ZIP cannot hold, which is no reason to fail
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as bundle:
         def add(name: str, content: str | bytes) -> None:
             bundle.writestr(name, content)
             members.append(name)

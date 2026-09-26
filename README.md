@@ -102,8 +102,10 @@ sudo systemctl daemon-reload
 ```
 
 `make install` copies the built page to `$(PREFIX)/share/cockpit/oscap`, the
-bridge script next to it and the `cockpit-oscap-scan.service` and `.timer`
-units to `$(PREFIX)/lib/systemd/system` (override with `SYSTEMD_UNIT_DIR`).
+bridge script next to it, the report viewer to
+`$(PREFIX)/share/cockpit/oscap-report` and the `cockpit-oscap-scan.service` and
+`.timer` units to `$(PREFIX)/lib/systemd/system` (override with
+`SYSTEMD_UNIT_DIR`).
 
 ## Development
 
@@ -148,6 +150,7 @@ src/
   app.tsx           shell: backend detection, tabs, scan banner, cockpit.location routing
   pages/            Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
   components/       ScanDialog, RemediationDialog, RuleDetails, labels, states, ConfirmDialog
+  report/           the oscap-report package: the scanner's report in a tab, sandboxed
 systemd/            cockpit-oscap-scan.service + .timer
 test-bridge/        pytest suite for the bridge (synthetic datastream and ARF fixtures)
 test/               cockpit browser integration tests

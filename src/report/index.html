@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  SPDX-License-Identifier: LGPL-2.1-or-later
+
+  The scanner's HTML report, shown by the Compliance page in a tab of its own.
+  This is a separate Cockpit package because the report needs inline scripts and
+  styles, which the Compliance page's Content-Security-Policy forbids: this
+  package relaxes only that, and puts the report in a sandboxed frame so that
+  its scripts run in an origin of their own, away from the Cockpit session.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scanner report</title>
+  <link rel="stylesheet" href="report.css">
+</head>
+<body>
+  <p id="status" role="status">Rendering the scanner's report…</p>
+  <iframe id="report" title="Scanner report" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" hidden></iframe>
+  <script src="report.js"></script>
+</body>
+</html>

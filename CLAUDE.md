@@ -21,6 +21,7 @@ src/
                       # TruncatedText, ErrorBoundary, labels, states, ConfirmDialog
   app.scss            # Page styles (PatternFly 6 tokens only; light and dark themes)
   manifest.json       # Cockpit manifest — menu entry, keywords, docs, install hints
+  report/             # The oscap-report package: the scanner's HTML report in a tab (own CSP, sandboxed frame)
 test-bridge/          # pytest unit tests (synthetic datastream + ARF fixtures, mocked systemctl)
 test/unit/            # Frontend helper unit tests (run with npm run test:unit)
 test/                 # Browser integration tests (check-oscap, run in a cockpit test VM)
@@ -116,7 +117,15 @@ dialog available from every tab (the old `scan` route redirects to `overview`).
 the manifest preloads the page so the navigation icon appears without visiting it.
 `RuleDetails` fetches a rule only while its row is expanded and caches per
 datastream; on a result page it also loads the rule's history (`rule-history`, one
-linked square per scan of the profile). Kebab menus use `ActionsMenu` (a named toggle) rather than cockpit's
+linked square per scan of the profile).
+
+The scanner's HTML report opens in a tab served by a second Cockpit package,
+`oscap-report` (`src/report/`, installed next to the page): the report needs inline
+scripts and styles, which the page's Content-Security-Policy forbids, so that package
+relaxes only `script-src`/`style-src` and puts the report in a sandboxed `srcdoc` frame
+(opaque origin, no access to the session). The page opens the tab on the click and
+hands it the rendered report over `postMessage` after a "ready" handshake; `?rule=`
+makes a script added to the report open that rule's details dialog. Kebab menus use `ActionsMenu` (a named toggle) rather than cockpit's
 `KebabDropdown`; inline alerts set `component="h2"` so heading order stays valid.
 
 ### Systemd Timer

@@ -103,6 +103,10 @@ install: $(DIST_TEST) po/LINGUAS
 	mkdir -p $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)
 	cp -r dist/* $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)
 	install -m 0755 src/oscap-bridge.py $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)/oscap-bridge.py
+	# the scanner's report viewer is a package of its own (it needs a different Content-Security-Policy)
+	mkdir -p $(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)-report
+	install -m 0644 src/report/manifest.json src/report/index.html src/report/report.js src/report/report.css \
+		$(DESTDIR)$(PREFIX)/share/cockpit/$(PACKAGE_NAME)-report/
 	mkdir -p $(DESTDIR)$(SYSTEMD_UNIT_DIR)
 	install -m 0644 systemd/cockpit-oscap-scan.service systemd/cockpit-oscap-scan.timer $(DESTDIR)$(SYSTEMD_UNIT_DIR)/
 	mkdir -p $(DESTDIR)$(PREFIX)/share/metainfo/
@@ -125,11 +129,12 @@ test-bridge:
 devel-install: $(DIST_TEST)
 	mkdir -p ~/.local/share/cockpit
 	ln -s `pwd`/dist ~/.local/share/cockpit/$(PACKAGE_NAME)
+	ln -s `pwd`/src/report ~/.local/share/cockpit/$(PACKAGE_NAME)-report
 
 # assumes that there was symlink set up using the above devel-install target,
 # and removes it
 devel-uninstall:
-	rm -f ~/.local/share/cockpit/$(PACKAGE_NAME)
+	rm -f ~/.local/share/cockpit/$(PACKAGE_NAME) ~/.local/share/cockpit/$(PACKAGE_NAME)-report
 
 print-version:
 	@echo "$(VERSION)"

@@ -32,7 +32,6 @@ import {
     downloadFile,
     errorMessage,
     matchesSearch,
-    openInNewTab,
     parseTimestamp,
     profileChoices,
     resultsToCsv,
@@ -48,28 +47,38 @@ export async function downloadReport(id: string): Promise<void> {
     downloadFile(`compliance-report-${safeFilename(id)}.html`, report.html, "text/html");
 }
 
-// Runs inside the scanner's report: opens the details of the rule named in the location's fragment.
-// The report gives each rule's panel the class rule-detail-id-<rule id> and a dialog per panel id.
-const REPORT_FOCUS_SCRIPT = `
-window.addEventListener("load", function () {
-    var rule = decodeURIComponent(location.hash.slice(1));
-    var panel = rule && document.getElementsByClassName("rule-detail-id-" + rule)[0];
-    if (!panel)
-        return;
-    var suffix = (panel.id || "").replace(/^rule-detail-/, "");
-    if (suffix && typeof openRuleDetailsDialog === "function") {
-        try { openRuleDetailsDialog(suffix); return; } catch (e) { /* fall back to scrolling */ }
-    }
-    panel.scrollIntoView();
-});
-`;
-
-/** Show the scanner's HTML report in a new tab, at a rule's details when one is given. */
+/**
+ * Show the scanner's HTML report in a tab of its own, at a rule's details when one is given. The tab is
+ * the oscap-report package (its own Content-Security-Policy lets the report's scripts run, in a
+ * sandboxed frame); it is opened on the click, so popup blockers let it through, and receives the
+ * report over postMessage once the bridge has rendered it.
+ */
 export function openReport(id: string, ruleId = ""): Promise<void> {
-    const html = generateReport(id).then(report => (ruleId
-        ? report.html.replace(/<\/body>/i, `<script>${REPORT_FOCUS_SCRIPT}</script></body>`)
-        : report.html));
-    return openInNewTab(html, "text/html", _("Rendering the scanner's report…"), ruleId);
+    const query = new URLSearchParams({ result: id, ...ruleId && { rule: ruleId } });
+    const tab = window.open(`../oscap-report/index.html?${query}`, "_blank");
+    if (!tab)
+        return Promise.reject(new Error(_("The browser blocked the report's tab; allow pop-ups for this site and try again.")));
+    const ready = new Promise<void>(resolve => {
+        const listener = (event: MessageEvent) => {
+            if (event.source === tab && event.origin === window.location.origin &&
+                typeof event.data === "object" && event.data?.type === "oscap-report-ready") {
+                window.removeEventListener("message", listener);
+                resolve();
+            }
+        };
+        window.addEventListener("message", listener);
+    });
+    return generateReport(id).then(
+        async report => {
+            await ready;
+            tab.postMessage({ type: "oscap-report", html: report.html, title: cockpit.format(_("Scanner report · $0"), id) },
+                            window.location.origin);
+        },
+        async err => {
+            await ready;
+            tab.postMessage({ type: "oscap-report-error", message: errorMessage(err) }, window.location.origin);
+            throw err;
+        });
 }
 
 export async function downloadArf(id: string): Promise<void> {

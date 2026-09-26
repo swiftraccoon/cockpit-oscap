@@ -1,0 +1,7 @@
+{
+  "version": 0,
+  "requires": {
+    "cockpit": "300"
+  },
+  "content-security-policy": "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+}

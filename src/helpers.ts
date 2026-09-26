@@ -273,32 +273,6 @@ export function downloadFile(filename: string, content: string | Uint8Array<Arra
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/**
- * Open a document in a new tab. The tab opens at once, on the user's click (a tab opened later,
- * after the content arrived, is what popup blockers stop), and gets the content when `load` resolves;
- * `fragment` scrolls the document to that anchor.
- */
-export function openInNewTab(load: Promise<string>, type: string, placeholder: string, fragment = ""): Promise<void> {
-    const tab = window.open("", "_blank");
-    if (tab) {
-        tab.document.write(`<!DOCTYPE html><title>${placeholder}</title><p style="font-family: sans-serif">${placeholder}</p>`);
-        tab.document.close();
-    }
-    return load.then(content => {
-        const url = URL.createObjectURL(new Blob([content], { type }));
-        const target = fragment ? `${url}#${encodeURIComponent(fragment)}` : url;
-        if (tab && !tab.closed)
-            tab.location.replace(target);
-        else
-            window.open(target, "_blank");
-        window.setTimeout(() => URL.revokeObjectURL(url), 60000);
-    }, err => {
-        if (tab && !tab.closed)
-            tab.close();
-        throw err;
-    });
-}
-
 /** A file name fragment safe for downloads: keeps letters, digits, dot, dash and underscore. */
 export function safeFilename(text: string): string {
     return text.replace(/[^A-Za-z0-9._-]+/g, "_");
