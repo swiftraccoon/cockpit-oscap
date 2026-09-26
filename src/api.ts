@@ -28,6 +28,7 @@ import type {
     ProfileRules,
     RemediateProgress,
     RemediateResult,
+    RemediationRun,
     ReportInfo,
     ResultSummary,
     RuleDetail,
@@ -287,6 +288,10 @@ export const generateReport = (id: string) => run<ReportInfo>("generate-report",
 
 export const generateFix = (id: string, type: FixType = "bash") =>
     run<FixInfo>("generate-fix", [id, "--type", type]);
+
+/** Remediation runs recorded on this system, newest first, optionally only those of one scan. */
+export const listRemediations = (resultId?: string) =>
+    run<RemediationRun[]>("list-remediations", resultId ? [resultId] : []);
 
 export function remediate(
     id: string,

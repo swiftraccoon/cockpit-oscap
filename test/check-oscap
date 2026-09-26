@@ -70,8 +70,12 @@ class TestOscap(testlib.MachineCase):
             self.skipTest("no SCAP Security Guide content in this image")
 
         # the scan writes results and state under /var/lib/cockpit-oscap; leave the VM as it was
-        # (restore_dir removes the directory again when it did not exist before)
+        # (restore_dir removes the directory again when it did not exist before). Should the test
+        # give up on a slow scan, stop oscap first: the bridge keeps scanning after the page is gone
+        # and would write its result after the restore.
         self.restore_dir("/var/lib/cockpit-oscap")
+        self.addCleanup(self.machine.execute,
+                        "pkill -x oscap || true; for i in $(seq 40); do pgrep -x oscap >/dev/null || break; sleep 0.5; done; sleep 1")
 
         self.login_and_go("/oscap")
         b.wait_visible("#oscap-tabs")

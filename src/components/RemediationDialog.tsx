@@ -24,7 +24,7 @@ import { fmt_to_fragments } from "utils";
 import { generateFix, remediate, scan } from "../api";
 import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
-import { downloadFile, errorMessage, ruleShortName, safeFilename } from "../helpers";
+import { downloadFile, errorMessage, ruleShortName, safeFilename, withMember } from "../helpers";
 import type {
     FixRuleInfo,
     RemediateProgress,
@@ -55,10 +55,12 @@ function buildScript(result: ScanResult, rules: FixRuleInfo[]): string {
     return lines.join("\n");
 }
 
-export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
+export const RemediationDialog = ({ result, initialSelection, onApplied, onRescanned }: {
     result: ScanResult;
     /** Rules to pre-select instead of the default (everything but high-risk fixes). */
     initialSelection?: string[];
+    /** Fixes were applied (successfully or not): the remediation history changed. */
+    onApplied?: () => void;
     onRescanned?: (rescan: ScanResult) => void;
 }) => {
     const Dialogs = useDialogs();
@@ -92,12 +94,7 @@ export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
     const selectedRules = fixable.filter(r => selection.has(r.id));
 
     function toggle(ruleId: string, isSelected: boolean) {
-        const next = new Set(selection);
-        if (isSelected)
-            next.add(ruleId);
-        else
-            next.delete(ruleId);
-        setSelected(next);
+        setSelected(withMember(selection, ruleId, isSelected));
     }
 
     function apply() {
@@ -108,6 +105,7 @@ export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
                 .then(remediation => {
                     setOutcome(remediation);
                     setPhase("applied");
+                    onApplied?.();
                 })
                 .catch((err: unknown) => {
                     setError(errorMessage(err));

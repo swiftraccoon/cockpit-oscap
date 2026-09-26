@@ -66,8 +66,8 @@ make codecheck            # Static analysis via test/common/static-code
 
 Commands (argv[1]): `detect-backend`, `get-config`, `set-config`, `list-profiles`,
 `profile-rules`, `rule-info`, `scan`, `list-results`, `get-result`, `delete-result`,
-`generate-report`, `generate-fix`, `remediate`, `create-tailoring`, `parse-tailoring`,
-`import-tailoring`, `delete-tailoring`, `manage-timer`, `validate-calendar`.
+`generate-report`, `generate-fix`, `remediate`, `list-remediations`, `create-tailoring`,
+`parse-tailoring`, `import-tailoring`, `delete-tailoring`, `manage-timer`, `validate-calendar`.
 
 Every command prints one JSON document; errors are `{"error": "..."}` with exit
 status 1 (raised as `BridgeError` internally). `scan` and `remediate` stream
@@ -85,7 +85,9 @@ reports it with a `tailoring_problem` so the UI can explain and remove it. A
 different SSG product name in the tailoring's benchmark href is only a note (rule
 ids are shared across products). Remediation generates fixes from the ARF result
 (`--result-id`, `--type bash|ansible`) and runs the selected Bash rule blocks one at
-a time; `has_fix` on rules means precisely that a Bash fix exists.
+a time; `has_fix` on rules means precisely that a Bash fix exists. Each run leaves the
+applied script plus a JSON audit record in `remediation/`, which `list-remediations`
+turns into the remediation history shown on a result.
 
 Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailoring/`,
 `remediation/`, `scan-state.json`).

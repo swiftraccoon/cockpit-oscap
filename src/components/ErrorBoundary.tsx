@@ -39,7 +39,12 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
                     error={this.state.error.message}
                     onRetry={() => this.setState({ error: null })}
                 />
-                <Button variant="link" onClick={() => cockpit.location.go(["overview"])}>{_("Back to overview")}</Button>
+                <Button
+                    variant="link"
+                    onClick={() => { this.setState({ error: null }); cockpit.location.go(["overview"]) }}
+                >
+                    {_("Back to overview")}
+                </Button>
             </PageSection>
         );
     }

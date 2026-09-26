@@ -38,8 +38,8 @@ const _ = cockpit.gettext;
 const RELOAD_COALESCE_MS = 150;
 
 /** What Cockpit's navigation should flag next to "Compliance", or null when all is well. */
-function complianceStatus(results: ResultSummary[], scanning: boolean, scanStatus: string | undefined): Status | null {
-    if (!scanning && scanStatus === "failed")
+function complianceStatus(results: ResultSummary[], scanStatus: string | undefined): Status | null {
+    if (scanStatus === "failed")
         return { type: "warning", title: _("The last compliance scan failed") };
     const latest = results.find(r => r.status === "complete");
     if (latest && scoreVariant(latest.score) === "danger")
@@ -147,16 +147,19 @@ const AppShell = () => {
     // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
     // so the icon appears without visiting it). Keyed on reloads and scan-state transitions only,
     // not on every progress write.
+    // (a finished scan bumps `version`; keying on `scanning` too would spawn the bridge twice)
     const scanStatus = scanState?.status;
+    const scanningRef = useRef(scanning);
+    scanningRef.current = scanning;
     useEffect(() => {
-        if (!info || !info.oscap || !info.content.present || scanning)
+        if (!info || !info.oscap || !info.content.present || scanningRef.current)
             return undefined;
         let cancelled = false;
         listResults()
-                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanning, scanStatus)); })
+                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanStatus)); })
                 .catch(() => { if (!cancelled) page_status.set_own(null); });
         return () => { cancelled = true };
-    }, [info, version, scanning, scanStatus]);
+    }, [info, version, scanStatus]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,

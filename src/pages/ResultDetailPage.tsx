@@ -8,7 +8,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
-import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
+import { Card, CardBody, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
 import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
@@ -24,9 +24,10 @@ import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
+import { usePageLocation } from "hooks";
 import * as timeformat from "timeformat";
 
-import { deleteResult, getResult, listResults } from "../api";
+import { deleteResult, getResult, listRemediations, listResults, readFile } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ActionsMenu } from "../components/ActionsMenu";
@@ -42,11 +43,13 @@ import {
     SeverityLabel,
     Stat,
     TailoredLabel,
+    When,
 } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import {
     SEVERITIES,
     compareSeverity,
+    downloadFile,
     errorMessage,
     matchesSearch,
     normalizeResult,
@@ -54,11 +57,12 @@ import {
     parseTimestamp,
     resultLabel,
     ruleChange,
+    safeFilename,
     sameContent,
     scoredTotal,
     severityLabel,
 } from "../helpers";
-import type { ResultSummary, RuleResultItem, ScanResult } from "../types";
+import type { RemediationRun, ResultSummary, RuleResultItem, ScanResult } from "../types";
 import { downloadArf, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
@@ -103,25 +107,79 @@ async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Pro
     }
 }
 
+const RemediationHistory = ({ runs, onError }: { runs: RemediationRun[]; onError: (message: string) => void }) => {
+    async function downloadScript(run: RemediationRun) {
+        try {
+            downloadFile(`${safeFilename(run.id)}.sh`, await readFile(run.script_path), "text/x-shellscript");
+        } catch (err) {
+            onError(errorMessage(err));
+        }
+    }
+
+    return (
+        <Card className="ct-card" id="result-remediations">
+            <CardTitle>{_("Remediation history")}</CardTitle>
+            <CardBody>
+                <ListingTable
+                    aria-label={_("Remediation runs")}
+                    variant="compact"
+                    columns={[_("Applied"), _("Outcome"), _("Rules"), { title: "", props: { screenReaderText: _("Actions") } }]}
+                    rows={runs.map(run => ({
+                        props: { key: run.id },
+                        columns: [
+                            { title: <When iso={run.timestamp} fallback={run.timestamp} /> },
+                            {
+                                title: run.success === null
+                                    ? <Label color="grey" isCompact>{_("Outcome not recorded")}</Label>
+                                    : run.success
+                                        ? <Label status="success" isCompact>{_("All fixes applied")}</Label>
+                                        : <Label status="danger" isCompact>{cockpit.format(cockpit.ngettext("$0 fix failed", "$0 fixes failed", run.failed), run.failed)}</Label>,
+                            },
+                            { title: cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", run.applied + run.failed), run.applied + run.failed) },
+                            {
+                                title: (
+                                    <Button variant="link" isInline onClick={() => downloadScript(run)}>
+                                        {_("Download script")}
+                                    </Button>
+                                ),
+                                props: { className: "pf-v6-c-table__action" },
+                            },
+                        ],
+                    }))}
+                />
+            </CardBody>
+        </Card>
+    );
+};
+
 export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
+    const { options } = usePageLocation();
+    // a link straight to one rule (from the overview, or shared): expanded and scrolled into view
+    const focusRule = typeof options.rule === "string" ? options.rule : null;
     const data = useAsync(async () => {
-        const [result, summaries] = await Promise.all([
+        const [result, summaries, remediations] = await Promise.all([
             getResult(resultId),
             listResults().catch((): ResultSummary[] => []),
+            listRemediations(resultId).catch((): RemediationRun[] => []),
         ]);
-        return { result, previous: await findPrevious(result, summaries) };
+        return { result, previous: await findPrevious(result, summaries), remediations };
     }, [resultId, app.version]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
     const [severity, setSeverity] = useState("all");
     const [group, setGroup] = useState("all");
     const [error, setError] = useState<string | null>(null);
-    const [expandedRules, setExpandedRules] = useState<RowRecord>({});
+    const [expandedRules, setExpandedRules] = useState<RowRecord>(() => (focusRule ? { [focusRule]: true } : {}));
 
     const result = data.data?.result ?? null;
     const previous = data.data?.previous ?? null;
+    const remediations = data.data?.remediations ?? [];
+    useEffect(() => {
+        if (focusRule && result)
+            document.getElementById(`rule-${focusRule}`)?.scrollIntoView({ block: "center" });
+    }, [focusRule, result]);
     const groups = useMemo(() => {
         const names = new Set<string>();
         result?.results.forEach(r => names.add(r.group || ""));
@@ -194,16 +252,17 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
             <RemediationDialog
                 result={loaded}
                 {...ruleIds && { initialSelection: ruleIds }}
+                onApplied={() => app.bump()}
                 onRescanned={() => app.bump()}
             />
         );
     }
 
-    const shown = result.results.filter(rule =>
+    const shown = result.results.filter(rule => rule.rule_id === focusRule || (
         (status === "changed" ? changeOf(rule) !== null : matchesStatus(status, rule.result)) &&
         (severity === "all" || normalizeSeverity(rule.severity) === severity) &&
         (group === "all" || (rule.group || "") === group) &&
-        matchesSearch(search, rule.title, rule.rule_id, rule.group));
+        matchesSearch(search, rule.title, rule.rule_id, rule.group)));
     const byId = new Map(shown.map(r => [r.rule_id, r]));
 
     const statusCount = (filter: StatusFilter) =>
@@ -377,6 +436,11 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                             </CardBody>
                         </Card>
                     </StackItem>
+                    {remediations.length > 0 && (
+                        <StackItem>
+                            <RemediationHistory runs={remediations} onError={setError} />
+                        </StackItem>
+                    )}
                     {result.status === "interrupted" && (
                         <StackItem>
                             <Content component="p" className="oscap-muted">
@@ -459,11 +523,15 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                             sortMethod={sortMethod}
                             emptyCaption={_("No rules match the current filters")}
                             isEmptyStateInTable
-                            onExpand={setExpandedRules}
+                            onExpand={rows => setExpandedRules(prev => ({
+                                ...focusRule && { [focusRule]: prev[focusRule] ?? true },
+                                ...rows,
+                            }))}
                             rows={shown.map(rule => {
                                 const change = changeOf(rule);
                                 return {
                                     props: { key: rule.rule_id, id: `rule-${rule.rule_id}` },
+                                    initiallyExpanded: rule.rule_id === focusRule,
                                     columns: [
                                         { title: <ResultLabel result={rule.result} />, props: { className: "oscap-table-nowrap" } },
                                         {

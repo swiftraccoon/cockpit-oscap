@@ -202,6 +202,8 @@ export interface ResultSummary {
     profile_id: string;
     base_profile_id: string;
     datastream: string;
+    /** Wall-clock seconds the evaluation took, 0 when unknown. */
+    duration_seconds: number;
     profile_title: string;
     score: number;
     counts: ResultCounts;
@@ -299,6 +301,19 @@ export interface RemediateResult {
     result_id: string;
     success: boolean;
     script_path: string;
+    rules: RuleRemediation[];
+}
+
+/** One recorded remediation run (the script plus its audit record). */
+export interface RemediationRun {
+    id: string;
+    timestamp: string;
+    result_id: string;
+    script_path: string;
+    /** null for scripts from before the audit record existed. */
+    success: boolean | null;
+    applied: number;
+    failed: number;
     rules: RuleRemediation[];
 }
 

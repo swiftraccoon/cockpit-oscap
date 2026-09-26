@@ -131,6 +131,30 @@ export function scoredTotal(counts: ResultCounts): number {
     return counts.pass + counts.fail + counts.error;
 }
 
+/** A copy of `set` with `member` added or removed. */
+export function withMember<T>(set: Set<T>, member: T, present: boolean): Set<T> {
+    const next = new Set(set);
+    if (present)
+        next.add(member);
+    else
+        next.delete(member);
+    return next;
+}
+
+/** "45 seconds", "2 minutes", "1 hour 5 minutes": how long something took, coarsely. */
+export function formatDuration(seconds: number): string {
+    const total = Math.max(0, Math.round(seconds));
+    if (total < 60)
+        return cockpit.format(cockpit.ngettext("$0 second", "$0 seconds", total), total);
+    const minutes = Math.round(total / 60);
+    if (minutes < 60)
+        return cockpit.format(cockpit.ngettext("$0 minute", "$0 minutes", minutes), minutes);
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    const hoursText = cockpit.format(cockpit.ngettext("$0 hour", "$0 hours", hours), hours);
+    return rest === 0 ? hoursText : cockpit.format("$0 $1", hoursText, cockpit.format(cockpit.ngettext("$0 minute", "$0 minutes", rest), rest));
+}
+
 /** Results from before the content path was recorded (empty) belong to every series. */
 export function sameContent(a: string, b: string): boolean {
     return !a || !b || a === b;

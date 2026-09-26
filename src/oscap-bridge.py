@@ -314,6 +314,8 @@ class ResultSummary(TypedDict):
     profile_id: str
     base_profile_id: str
     datastream: str
+    #: wall-clock seconds the evaluation took, 0 when unknown
+    duration_seconds: int
     profile_title: str
     score: float
     counts: dict[str, int]
@@ -1041,7 +1043,14 @@ def cmd_rule_info(args: list[str]) -> None:
             substituted = True
         except OSError as exc:
             raise BridgeError(f"cannot read datastream {requested}: {exc}") from exc
-    detail = rule_detail(resolve_datastream(requested), positional[0])
+    ds_path = resolve_datastream(requested)
+    try:
+        detail = rule_detail(ds_path, positional[0])
+    except BridgeError as exc:
+        if not substituted:
+            raise
+        raise BridgeError(f"the content this scan used, {Path(_opt(args, '--datastream') or '').name}, is no longer "
+                          f"installed and {Path(ds_path).name} does not describe this rule ({exc})") from exc
     detail["content_substituted"] = substituted
     output_json(detail)
 
@@ -1398,6 +1407,17 @@ def _load_result(result_id: str) -> ScanResult:
     )
 
 
+def _duration_seconds(start: str, end: str) -> int:
+    try:
+        started = datetime.fromisoformat(start)
+        ended = datetime.fromisoformat(end)
+    except ValueError:
+        return 0
+    if started.tzinfo is None or ended.tzinfo is None:
+        return 0
+    return max(0, int((ended - started).total_seconds()))
+
+
 def _summarize(result: ScanResult) -> ResultSummary:
     return ResultSummary(
         id=result["id"],
@@ -1405,6 +1425,7 @@ def _summarize(result: ScanResult) -> ResultSummary:
         profile_id=result["profile_id"],
         base_profile_id=result["base_profile_id"],
         datastream=result["datastream"],
+        duration_seconds=_duration_seconds(result["start_time"], result["end_time"]),
         profile_title=result["profile_title"],
         score=result["score"],
         counts=result["counts"],
@@ -2020,8 +2041,71 @@ def remediate(result: ScanResult, rule_ids: list[str]) -> RemediateResult:
                                       errors=f"timed out after {REMEDIATE_RULE_TIMEOUT} seconds")
         log.info("remediation %s: rc=%d", rid, outcome["exit_status"])
         outcomes.append(outcome)
-    return RemediateResult(result_id=result["id"], success=all(o["success"] for o in outcomes),
-                           script_path=str(script_path), rules=outcomes)
+    outcome_result = RemediateResult(result_id=result["id"], success=all(o["success"] for o in outcomes),
+                                     script_path=str(script_path), rules=outcomes)
+    # the audit trail next to the script: what was applied, when, and how it went
+    _atomic_write(script_path.with_suffix(".json"),
+                  json.dumps({"timestamp": _iso(_now_utc()), **outcome_result}, indent=1) + "\n")
+    return outcome_result
+
+
+class RemediationRun(TypedDict):
+    id: str
+    timestamp: str
+    result_id: str
+    script_path: str
+    #: None for scripts from before the audit trail existed
+    success: bool | None
+    applied: int
+    failed: int
+    rules: list[RuleRemediation]
+
+
+_REMEDIATION_NAME_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}T\d{6})-(?P<result>.+)$")
+
+
+def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
+    """Every remediation run recorded under REMEDIATION_DIR, newest first (optionally for one result)."""
+    runs: list[RemediationRun] = []
+    if not REMEDIATION_DIR.is_dir():
+        return runs
+    for script in REMEDIATION_DIR.glob("*.sh"):
+        match = _REMEDIATION_NAME_RE.match(script.stem)
+        if not match or (result_id and match.group("result") != result_id):
+            continue
+        record = _read_json_file(script.with_suffix(".json")) or {}
+        rules = record.get("rules")
+        outcomes: list[RuleRemediation] = []
+        if isinstance(rules, list):
+            outcomes = [RuleRemediation(rule_id=str(r.get("rule_id", "")), success=bool(r.get("success")),
+                                        exit_status=int(r.get("exit_status", -1)), output=str(r.get("output", "")),
+                                        errors=str(r.get("errors", "")))
+                        for r in rules if isinstance(r, dict)]
+        applied = sum(1 for o in outcomes if o["success"])
+        if not outcomes:
+            # legacy script: count its rule blocks, outcome unknown
+            try:
+                applied = sum(1 for line in script.read_text().splitlines() if line.startswith("# --- "))
+            except OSError:
+                applied = 0
+        timestamp = record.get("timestamp")
+        runs.append(RemediationRun(
+            id=script.stem,
+            timestamp=timestamp if isinstance(timestamp, str) else _normalize_timestamp(match.group("time")),
+            result_id=match.group("result"),
+            script_path=str(script),
+            success=bool(record["success"]) if "success" in record else None,
+            applied=applied,
+            failed=len(outcomes) - applied if outcomes else 0,
+            rules=outcomes,
+        ))
+    runs.sort(key=lambda r: r["timestamp"], reverse=True)
+    return runs
+
+
+def cmd_list_remediations(args: list[str]) -> None:
+    positional = _positional(args)
+    output_json(list_remediations(_check_result_id(positional[0]) if positional else None))
 
 
 def cmd_remediate(args: list[str]) -> None:
@@ -2241,6 +2325,7 @@ HANDLERS: dict[str, Callable[[list[str]], None]] = {
     "parse-tailoring": cmd_parse_tailoring,
     "import-tailoring": cmd_import_tailoring,
     "delete-tailoring": cmd_delete_tailoring,
+    "list-remediations": cmd_list_remediations,
     "manage-timer": cmd_manage_timer,
     "validate-calendar": cmd_validate_calendar,
 }

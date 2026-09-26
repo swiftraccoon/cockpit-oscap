@@ -26,7 +26,15 @@ import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
-import { downloadFile, errorMessage, matchesSearch, parseTimestamp, resultsToCsv, safeFilename } from "../helpers";
+import {
+    downloadFile,
+    errorMessage,
+    matchesSearch,
+    parseTimestamp,
+    resultsToCsv,
+    safeFilename,
+    withMember,
+} from "../helpers";
 import type { FixType, ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
@@ -118,14 +126,7 @@ variant="primary" onClick={() => app.runScan()}
     const selectedShown = shown.filter(s => selected.has(s.id));
 
     function selectRow(id: string, isSelected: boolean) {
-        setSelected(prev => {
-            const next = new Set(prev);
-            if (isSelected)
-                next.add(id);
-            else
-                next.delete(id);
-            return next;
-        });
+        setSelected(prev => withMember(prev, id, isSelected));
     }
 
     async function removeSelected() {
@@ -138,12 +139,22 @@ variant="primary" onClick={() => app.runScan()}
         });
         if (!confirmed)
             return;
-        await guarded(async () => {
-            for (const id of ids)
+        // keep going past a failure: what was deleted stays deleted, the rest stays selected
+        const failures: string[] = [];
+        for (const id of ids) {
+            try {
                 await deleteResult(id);
-            setSelected(new Set());
-            app.bump();
-        });
+                setSelected(prev => withMember(prev, id, false));
+            } catch (err) {
+                failures.push(`${id}: ${errorMessage(err)}`);
+            }
+        }
+        setError(failures.length > 0 ? failures.join("\n") : null);
+        app.bump();
+    }
+
+    function openResult(id: string) {
+        cockpit.location.go(["results", id]);
     }
 
     const sortMethod = (rows: ListingTableRowProps[], direction: SortByDirection, index: number) => {
@@ -224,16 +235,27 @@ variant="primary" onClick={() => app.runScan()}
                         // a click on the row's checkbox selects; anywhere else opens the scan
                         if (ev?.target instanceof Element && ev.target.closest("input, .pf-v6-c-table__check"))
                             return;
-                        cockpit.location.go(["results", String(row.props?.key)]);
+                        openResult(String(row.props?.key));
                     }}
-                    {...!readOnly && {
+                    {...!readOnly && shown.length > 0 && {
                         onSelect: (_ev, isSelected, _index, rowData) => selectRow(String(rowData.props?.id), isSelected),
                         onHeaderSelect: (_ev, isSelected) => setSelected(isSelected ? new Set(shown.map(s => s.id)) : new Set()),
                     }}
                     rows={shown.map(summary => {
                         const date = parseTimestamp(summary.timestamp);
                         return {
-                            props: { key: summary.id },
+                            props: {
+                                key: summary.id,
+                                // PatternFly's clickable row swallows Space/Enter, which the checkbox needs
+                                onKeyDown: (ev: React.KeyboardEvent) => {
+                                    if (ev.target instanceof HTMLInputElement)
+                                        return;
+                                    if (ev.key === "Enter" || ev.key === " ") {
+                                        ev.preventDefault();
+                                        openResult(summary.id);
+                                    }
+                                },
+                            },
                             selected: selected.has(summary.id),
                             columns: [
                                 {

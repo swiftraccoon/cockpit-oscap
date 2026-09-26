@@ -32,9 +32,7 @@ jobs:
         run: git config --global --add safe.directory /__w/
 
       - name: Workaround for https://github.com/actions/checkout/pull/697
-        run: |
-          TAG_VERSION="$(git describe --tags)"
-          git fetch --force origin ${TAG_VERSION}:refs/tags/${TAG_VERSION}
+        run: git fetch --force origin "${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
 
       - name: Build release
         run: make dist
@@ -43,10 +41,12 @@ jobs:
         run: |
           set -x
 
-          TAG_VERSION="$(git describe --tags)"
-          git tag -l --format='%(contents)' ${TAG_VERSION} > release-note.txt
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          # subject and body only: a signed tag's %(contents) would include the signature
+          git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "${TAG_VERSION}" > release-note.txt
 
-          # make dist names the tarball after its own VERSION (git describe with '-' turned into '.')
-          gh release create --title ${TAG_VERSION} --notes-file release-note.txt  \
-            ${TAG_VERSION} \
-            "${GITHUB_REPOSITORY#*/}"-*.tar.xz
+          # the tarball is named after the Makefile's VERSION (git describe, annotated tags only);
+          # a lightweight tag makes the two differ and the upload fail, which is the right outcome
+          gh release create --title "${TAG_VERSION}" --notes-file release-note.txt  \
+            "${TAG_VERSION}" \
+            "${GITHUB_REPOSITORY#*/}-$(make print-version).tar.xz"

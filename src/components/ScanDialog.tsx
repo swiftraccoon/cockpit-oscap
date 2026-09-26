@@ -20,11 +20,11 @@ import { FormHelper } from "cockpit-components-form-helper";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 
-import { getConfig, listProfiles, scan } from "../api";
+import { getConfig, listProfiles, listResults, scan } from "../api";
 import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
-import { errorMessage, ruleShortName } from "../helpers";
-import type { ProfileInfo, ScanProgress, ScanResult } from "../types";
+import { errorMessage, formatDuration, ruleShortName } from "../helpers";
+import type { ProfileInfo, ResultSummary, ScanProgress, ScanResult } from "../types";
 import { ScanEta } from "./ScanEta";
 import { CountLabels, ScoreValue } from "./labels";
 import { ErrorAlert, Loading } from "./states";
@@ -39,8 +39,12 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
 }) => {
     const Dialogs = useDialogs();
     const setup = useAsync(async () => {
-        const [profiles, config] = await Promise.all([listProfiles(), getConfig()]);
-        return { profiles, config };
+        const [profiles, config, results] = await Promise.all([
+            listProfiles(),
+            getConfig(),
+            listResults().catch((): ResultSummary[] => []),
+        ]);
+        return { profiles, config, results };
     }, []);
 
     const [phase, setPhase] = useState<Phase>("setup");
@@ -63,6 +67,9 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
 
     const profiles: ProfileInfo[] = setup.data?.profiles ?? [];
     const profile = profiles.find(p => p.id === profileId);
+    const lastScan = (setup.data?.results ?? []).find(r => r.status === "complete" && r.base_profile_id === profileId &&
+        r.duration_seconds > 0);
+    const lastDuration = lastScan ? lastScan.duration_seconds : null;
 
     function start() {
         setPhase("running");
@@ -124,6 +131,9 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
                                 placeholder={_("Select a profile")}
                             />
                             <FormHelper helperText={profile?.description} />
+                            {lastDuration !== null && (
+                                <FormHelper helperText={cockpit.format(_("The last scan of this profile took $0."), formatDuration(lastDuration))} />
+                            )}
                         </FormGroup>
                         {profile?.tailored_profile_id && (
                             <FormGroup fieldId="scan-tailoring">

@@ -204,6 +204,25 @@ def test_remediate_runs_each_rule_separately(bridge, monkeypatch, capsys):
     assert "echo applied-audit" in script.read_text()
     assert oct(script.stat().st_mode & 0o777) == "0o700"
 
+    # the audit record next to the script, and the history built from it
+    record = json.loads(script.with_suffix(".json").read_text())
+    assert record["success"] is False
+    assert record["timestamp"].endswith("+00:00")
+    assert [r["rule_id"] for r in record["rules"]] == [RULE_AUDIT, RULE_ROOT_LOGIN]
+    runs = bridge.list_remediations(result_id)
+    assert len(runs) == 1
+    assert runs[0]["result_id"] == result_id
+    assert runs[0]["script_path"] == str(script)
+    assert (runs[0]["success"], runs[0]["applied"], runs[0]["failed"]) == (False, 1, 1)
+    assert bridge.list_remediations("2026-01-01T000000-other") == []
+    # a script from before the audit record existed still shows up, with an unknown outcome
+    legacy = bridge.REMEDIATION_DIR / "2026-01-01T000000-2026-04-08T025531-base.sh"
+    legacy.write_text("#!/usr/bin/env bash\n# --- a ---\necho a\n# --- b ---\necho b\n")
+    runs = bridge.list_remediations(result_id)
+    assert [r["id"] for r in runs] == [script.stem, legacy.stem]  # newest first
+    assert (runs[1]["success"], runs[1]["applied"], runs[1]["failed"]) == (None, 2, 0)
+    assert runs[1]["timestamp"] == "2026-01-01T00:00:00+00:00"
+
     with pytest.raises(bridge.BridgeError, match="no remediation is available"):
         bridge.remediate(bridge._load_result(result_id), [RULE_TIMEOUT])
     with pytest.raises(bridge.BridgeError, match="no remediation is available"):
@@ -237,3 +256,8 @@ def test_generate_fix_ansible_playbook(bridge, monkeypatch):
         bridge.generate_fix(bridge._load_result(result_id), "puppet")
     with pytest.raises(bridge.BridgeError, match="unsupported fix type"):
         bridge.cmd_generate_fix([result_id, "--type", "puppet"])
+
+
+def test_list_remediations_cli(run_bridge):
+    assert run_bridge("list-remediations") == []
+    assert "error" in run_bridge("list-remediations", "../etc", expect_rc=1)

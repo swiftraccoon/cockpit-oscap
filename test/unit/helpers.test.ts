@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 
 import {
     emptyCounts,
+    formatDuration,
     formatScore,
     matchesSearch,
     parseTimestamp,
@@ -18,6 +19,7 @@ import {
     sameContent,
     scoreVariant,
     scoredTotal,
+    withMember,
 } from "../../src/helpers";
 
 describe("score thresholds", () => {
@@ -102,6 +104,22 @@ describe("small helpers", () => {
         assert.equal(sameContent("", "/a.xml"), true);
         assert.equal(sameContent("/a.xml", "/a.xml"), true);
         assert.equal(sameContent("/a.xml", "/b.xml"), false);
+    });
+
+    it("copies a set with a member added or removed", () => {
+        const base = new Set(["a"]);
+        assert.deepEqual([...withMember(base, "b", true)], ["a", "b"]);
+        assert.deepEqual([...withMember(base, "a", false)], []);
+        assert.deepEqual([...base], ["a"]);  // untouched
+    });
+
+    it("describes durations coarsely", () => {
+        assert.equal(formatDuration(0), "0 seconds");
+        assert.equal(formatDuration(1), "1 second");
+        assert.equal(formatDuration(59.4), "59 seconds");
+        assert.equal(formatDuration(150), "3 minutes");
+        assert.equal(formatDuration(3600), "1 hour");
+        assert.equal(formatDuration(3900), "1 hour 5 minutes");
     });
 
     it("counts only evaluated rules toward the total", () => {

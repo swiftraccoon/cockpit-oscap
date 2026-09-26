@@ -295,7 +295,7 @@ variant="link" isInline
                                                     aria-label={_("Failed rules")}
                                                     variant="compact"
                                                     columns={[_("Severity"), _("Rule"), _("Category")]}
-                                                    onRowClick={() => cockpit.location.go(["results", latest.id])}
+                                                    onRowClick={(_ev, row) => cockpit.location.go(["results", latest.id], { rule: String(row.props?.key) })}
                                                     rows={failed.slice(0, TOP_FAILED).map(rule => ({
                                                         props: { key: rule.rule_id },
                                                         columns: [
