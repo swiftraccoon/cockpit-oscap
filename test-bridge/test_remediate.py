@@ -216,3 +216,24 @@ def test_remediate_argument_validation(run_bridge, bridge):
     assert "no rules" in run_bridge("remediate", result_id, expect_rc=1)["error"]
     assert "error" in run_bridge("remediate", result_id, "--rules", "{}", expect_rc=1)
     assert "error" in run_bridge("remediate", result_id, "--rules", '["bad id"]', expect_rc=1)
+
+
+def test_generate_fix_ansible_playbook(bridge, monkeypatch):
+    result_id = _seed_result(bridge)
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return 0, "---\n- hosts: all\n  tasks: []\n", ""
+
+    monkeypatch.setattr(bridge, "run_cmd", fake_run)
+    monkeypatch.setattr(bridge.shutil, "which", lambda _name: "/usr/bin/oscap")
+    fix = bridge.generate_fix(bridge._load_result(result_id), "ansible")
+    assert calls[0][4:6] == ["--fix-type", "ansible"]
+    assert fix["fix_type"] == "ansible"
+    assert fix["script"].startswith("---\n- hosts: all")
+    assert fix["rules"] == []  # playbooks are not split into per-rule blocks
+    with pytest.raises(bridge.BridgeError, match="unsupported fix type"):
+        bridge.generate_fix(bridge._load_result(result_id), "puppet")
+    with pytest.raises(bridge.BridgeError, match="unsupported fix type"):
+        bridge.cmd_generate_fix([result_id, "--type", "puppet"])

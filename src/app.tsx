@@ -105,8 +105,8 @@ const AppShell = () => {
     const runScan = useCallback((profileId?: string) => {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} onFinished={bump} />);
-    }, [Dialogs, bump]);
+        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} />);
+    }, [Dialogs]);
 
     const info = backend.data;
     const context = useMemo<AppContextValue | null>(() => info

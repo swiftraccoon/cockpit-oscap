@@ -11,19 +11,49 @@ import MinusCircleIcon from "@patternfly/react-icons/dist/esm/icons/minus-circle
 import PencilAltIcon from "@patternfly/react-icons/dist/esm/icons/pencil-alt-icon";
 import cockpit from "cockpit";
 
+import * as timeformat from "timeformat";
+
 import {
     formatScore,
     normalizeResult,
     normalizeSeverity,
+    parseTimestamp,
     resultLabel,
     scoreVariant,
     severityLabel,
 } from "../helpers";
+import type { RuleChange } from "../helpers";
 import type { ResultCounts, Severity } from "../types";
 
 const _ = cockpit.gettext;
 
 type LabelColor = "blue" | "teal" | "green" | "orange" | "purple" | "red" | "orangered" | "grey" | "yellow";
+
+/** An absolute timestamp with its relative distance, or a fallback when unset. */
+export const When = ({ iso, fallback }: { iso: string; fallback: string }) => {
+    const date = parseTimestamp(iso);
+    if (!date)
+        return <span>{fallback}</span>;
+    return (
+        <span>
+            {timeformat.dateTime(date)}
+            <span className="oscap-muted">{" · "}{timeformat.distanceToNow(date)}</span>
+        </span>
+    );
+};
+
+/** How a rule's result moved since the previous scan. */
+export const ChangeLabel = ({ change, before }: { change: RuleChange; before?: string | undefined }) => {
+    const title = before ? cockpit.format(_("Previously: $0"), resultLabel(before)) : "";
+    switch (change) {
+    case "fixed":
+        return <Label status="success" variant="outline" isCompact title={title}>{_("Now passing")}</Label>;
+    case "regressed":
+        return <Label status="danger" variant="outline" isCompact title={title}>{_("New failure")}</Label>;
+    default:
+        return <Label color="purple" variant="outline" isCompact title={title}>{_("Changed")}</Label>;
+    }
+};
 
 /** Result of evaluating a single rule (pass, fail, error, ...). */
 export const ResultLabel = ({ result, isCompact = true }: { result: string; isCompact?: boolean }) => {

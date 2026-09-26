@@ -188,3 +188,71 @@
 .oscap-empty-hint {
   max-inline-size: 42rem;
 }
+
+// ---------------------------------------------------------------------------
+// Score trend (inline SVG line chart)
+// ---------------------------------------------------------------------------
+
+.oscap-trend {
+  --oscap-trend-line: var(--pf-t--global--color--brand--default);
+  --oscap-trend-surface: var(--pf-t--global--background--color--primary--default);
+  --oscap-trend-guide: var(--pf-t--global--border--color--default);
+  --oscap-trend-text: var(--pf-t--global--text--color--subtle);
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--pf-t--global--spacer--xs);
+}
+
+// The dark theme's brand color is a light tint meant for text and buttons;
+// the mid blue step keeps the data mark saturated and legible on the dark surface.
+.pf-v6-theme-dark .oscap-trend {
+  --oscap-trend-line: var(--pf-t--color--blue--40);
+}
+
+.oscap-trend-svg {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  max-inline-size: 28rem;
+  overflow: visible;
+  cursor: pointer;
+  touch-action: none;
+
+  &:focus-visible {
+    outline: var(--pf-t--global--border--width--strong) solid var(--pf-t--global--color--brand--default);
+    outline-offset: var(--pf-t--global--spacer--xs);
+    border-radius: var(--pf-t--global--border--radius--small);
+  }
+}
+
+.oscap-trend-line {
+  fill: none;
+  stroke: var(--oscap-trend-line);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.oscap-trend-dot {
+  fill: var(--oscap-trend-line);
+  stroke: var(--oscap-trend-surface);
+  stroke-width: 2;
+}
+
+.oscap-trend-crosshair {
+  stroke: var(--oscap-trend-guide);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.oscap-trend-label {
+  fill: var(--oscap-trend-text);
+  font-family: var(--pf-t--global--font--family--body);
+  font-size: var(--pf-t--global--font--size--xs);
+}
+
+.oscap-trend-readout {
+  font-size: var(--pf-t--global--font--size--sm);
+}

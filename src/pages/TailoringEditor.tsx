@@ -26,7 +26,7 @@ import cockpit from "cockpit";
 
 import { KebabDropdown } from "cockpit-components-dropdown";
 import { ListingTable } from "cockpit-components-table";
-import type { ListingTableRowProps } from "cockpit-components-table";
+import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 
@@ -130,6 +130,7 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
 
     const [tab, setTab] = useState<"rules" | "values">("rules");
     const [current, setCurrent] = useState<EditorState | null>(null);
+    const [expandedRules, setExpandedRules] = useState<RowRecord>({});
     const [saved, setSaved] = useState<EditorState | null>(null);
     const [tailoring, setTailoring] = useState<TailoringInfo | null>(null);
     const [notice, setNotice] = useState<{ variant: "success" | "warning" | "info"; title: string } | null>(null);
@@ -159,9 +160,7 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
         setTailoring(data.data.tailoring);
     }, [data.data, base, values]);
 
-    if ((data.loading && !data.data) || !current || !saved)
-        return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
-    if (data.error || !data.data) {
+    if (data.error) {
         return (
             <PageSection hasBodyWrapper={false} isFilled>
                 <ErrorState title={_("Failed to load the profile")} error={data.error} onRetry={() => data.reload()} />
@@ -169,6 +168,8 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
             </PageSection>
         );
     }
+    if (!data.data || !current || !saved)
+        return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
 
     const title = data.data.rules.title || profileShortName(profileId);
     const readOnly = app.superuser === false;
@@ -409,6 +410,7 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                     sortMethod={sortRules}
                     emptyCaption={_("No rules match the current filters")}
                     isEmptyStateInTable
+                    onExpand={setExpandedRules}
                     rows={shownRules.map(rule => {
                         const selected = current.selection[rule.id];
                         const changed = base.selection[rule.id] !== selected;
@@ -438,7 +440,12 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                 { title: <SeverityLabel severity={rule.severity} /> },
                                 { title: rule.group || _("Uncategorized") },
                             ],
-                            expandedContent: <RuleDetails ruleId={rule.id} description={rule.description} />,
+                            expandedContent: (
+                                <RuleDetails
+                                    ruleId={rule.id} description={rule.description}
+                                    active={Boolean(expandedRules[rule.id])}
+                                />
+                            ),
                         };
                     })}
                 />

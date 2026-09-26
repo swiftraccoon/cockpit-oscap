@@ -23,6 +23,7 @@ import type {
     Config,
     ConfigPatch,
     FixInfo,
+    FixType,
     ProfileInfo,
     ProfileRules,
     RemediateProgress,
@@ -279,7 +280,8 @@ export const generateReport = (id: string) => run<ReportInfo>("generate-report",
 // Remediation
 // ---------------------------------------------------------------------------
 
-export const generateFix = (id: string) => run<FixInfo>("generate-fix", [id]);
+export const generateFix = (id: string, type: FixType = "bash") =>
+    run<FixInfo>("generate-fix", [id, "--type", type]);
 
 export function remediate(
     id: string,

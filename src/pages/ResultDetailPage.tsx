@@ -11,6 +11,7 @@ import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.
 import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
 import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
 import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
 import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
 import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
@@ -21,18 +22,19 @@ import cockpit from "cockpit";
 
 import { KebabDropdown } from "cockpit-components-dropdown";
 import { ListingTable } from "cockpit-components-table";
-import type { ListingTableRowProps } from "cockpit-components-table";
+import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 import * as timeformat from "timeformat";
 
-import { deleteResult, getResult } from "../api";
+import { deleteResult, getResult, listResults } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { RemediationDialog } from "../components/RemediationDialog";
 import { RuleDetails } from "../components/RuleDetails";
 import {
+    ChangeLabel,
     CountLabels,
     ResultLabel,
     ScanStatusLabel,
@@ -51,15 +53,16 @@ import {
     normalizeSeverity,
     parseTimestamp,
     resultLabel,
+    ruleChange,
     scoredTotal,
     severityLabel,
 } from "../helpers";
-import type { RuleResultItem, ScanResult } from "../types";
-import { downloadArf, downloadReport } from "./ResultsPage";
+import type { ResultSummary, RuleResultItem, ScanResult } from "../types";
+import { downloadArf, downloadFix, downloadReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
 
-type StatusFilter = "all" | "fail" | "pass" | "error" | "other";
+type StatusFilter = "all" | "fail" | "pass" | "error" | "other" | "changed";
 const STATUS_FILTERS: StatusFilter[] = ["all", "fail", "pass", "error", "other"];
 
 const RESULT_ORDER: Record<string, number> = { fail: 0, error: 1, pass: 2, fixed: 3, notchecked: 4, informational: 5, notapplicable: 6 };
@@ -79,22 +82,50 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
     }
 }
 
+/** The most recent completed scan of the same profile that ran before `result`, if any. */
+async function findPrevious(result: ScanResult): Promise<ScanResult | null> {
+    const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
+    let summaries: ResultSummary[];
+    try {
+        summaries = await listResults();
+    } catch {
+        return null;
+    }
+    // newest first, so the first older match is the immediately preceding scan
+    const before = summaries.find(s => s.id !== result.id && s.profile_id === result.profile_id &&
+        s.status === "complete" && (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at);
+    if (!before)
+        return null;
+    try {
+        return await getResult(before.id);
+    } catch {
+        return null;
+    }
+}
+
 export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
-    const data = useAsync(() => getResult(resultId), [resultId, app.version]);
+    const data = useAsync(async () => {
+        const result = await getResult(resultId);
+        return { result, previous: await findPrevious(result) };
+    }, [resultId, app.version]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
     const [severity, setSeverity] = useState("all");
     const [group, setGroup] = useState("all");
     const [error, setError] = useState<string | null>(null);
+    const [expandedRules, setExpandedRules] = useState<RowRecord>({});
 
-    const result = data.data;
+    const result = data.data?.result ?? null;
+    const previous = data.data?.previous ?? null;
     const groups = useMemo(() => {
         const names = new Set<string>();
         result?.results.forEach(r => names.add(r.group || ""));
         return Array.from(names).sort((a, b) => a.localeCompare(b));
     }, [result]);
+    const previousResults = useMemo(
+        () => new Map((previous?.results ?? []).map(r => [r.rule_id, r.result])), [previous]);
 
     if (data.loading && !result)
         return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
@@ -109,6 +140,17 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
 
     const loaded: ScanResult = result;
     const scannedAt = parseTimestamp(loaded.timestamp);
+    const previousAt = previous ? parseTimestamp(previous.timestamp) : null;
+    const changeOf = (rule: RuleResultItem) => ruleChange(previousResults.get(rule.rule_id), rule.result);
+    const changes = { fixed: 0, regressed: 0, changed: 0 };
+    if (previous) {
+        for (const rule of loaded.results) {
+            const change = changeOf(rule);
+            if (change)
+                changes[change] += 1;
+        }
+    }
+    const changedTotal = changes.fixed + changes.regressed + changes.changed;
     const readOnly = app.superuser === false;
     const canRemediate = loaded.counts.fail > 0 && Boolean(loaded.arf_path) && !readOnly && !app.scanning;
 
@@ -144,19 +186,22 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     }
 
     const shown = result.results.filter(rule =>
-        matchesStatus(status, rule.result) &&
+        (status === "changed" ? changeOf(rule) !== null : matchesStatus(status, rule.result)) &&
         (severity === "all" || normalizeSeverity(rule.severity) === severity) &&
         (group === "all" || (rule.group || "") === group) &&
         matchesSearch(search, rule.title, rule.rule_id, rule.group));
     const byId = new Map(shown.map(r => [r.rule_id, r]));
 
-    const statusCount = (filter: StatusFilter) => result.results.filter(r => matchesStatus(filter, r.result)).length;
+    const statusCount = (filter: StatusFilter) =>
+        (filter === "changed" ? changedTotal : result.results.filter(r => matchesStatus(filter, r.result)).length);
     const statusOptionLabel = (filter: StatusFilter) => {
         switch (filter) {
         case "all":
             return _("All results");
         case "other":
             return _("Other");
+        case "changed":
+            return _("Changed since previous scan");
         default:
             return resultLabel(filter);
         }
@@ -222,6 +267,42 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
                                 </Stat>
                                 <Stat label={_("Results")}><CountLabels counts={result.counts} /></Stat>
                                 <Stat label={_("Status")}><ScanStatusLabel status={result.status} /></Stat>
+                                {previous && (
+                                    <Stat label={_("Since previous scan")}>
+                                        <span className="oscap-inline-list" id="result-changes">
+                                            {changes.fixed > 0 && (
+                                                <Label status="success" isCompact>
+                                                    {cockpit.format(_("$0 now passing"), changes.fixed)}
+                                                </Label>
+                                            )}
+                                            {changes.regressed > 0 && (
+                                                <Label status="danger" isCompact>
+                                                    {cockpit.format(cockpit.ngettext("$0 new failure", "$0 new failures",
+                                                                                     changes.regressed), changes.regressed)}
+                                                </Label>
+                                            )}
+                                            {changes.changed > 0 && (
+                                                <Label color="purple" isCompact>
+                                                    {cockpit.format(_("$0 changed"), changes.changed)}
+                                                </Label>
+                                            )}
+                                            {changedTotal === 0
+                                                ? <span className="oscap-muted">{_("No changes")}</span>
+                                                : (
+                                                    <Button
+variant="link" isInline className="oscap-stat-detail"
+                                                            onClick={() => setStatus("changed")}
+                                                    >
+                                                        {_("Show")}
+                                                    </Button>
+                                                )}
+                                        </span>
+                                        <span className="oscap-muted oscap-stat-detail">
+                                            {cockpit.format(_("Compared with $0"),
+                                                            previousAt ? timeformat.dateTime(previousAt) : previous.timestamp)}
+                                        </span>
+                                    </Stat>
+                                )}
                                 <Flex
 flex={{ default: "flex_1" }} justifyContent={{ default: "justifyContentFlexEnd" }}
                                       alignItems={{ default: "alignItemsCenter" }} spaceItems={{ default: "spaceItemsSm" }}
@@ -255,6 +336,18 @@ key="arf" isDisabled={!result.arf_path}
                                                               onClick={() => guarded(() => downloadArf(result.id))}
                                                 >
                                                     {_("Download ARF results")}
+                                                </DropdownItem>,
+                                                <DropdownItem
+key="fix-bash" isDisabled={!result.arf_path || result.counts.fail === 0}
+                                                              onClick={() => guarded(() => downloadFix(result.id, "bash"))}
+                                                >
+                                                    {_("Download Bash remediation script")}
+                                                </DropdownItem>,
+                                                <DropdownItem
+key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
+                                                              onClick={() => guarded(() => downloadFix(result.id, "ansible"))}
+                                                >
+                                                    {_("Download Ansible playbook")}
                                                 </DropdownItem>,
                                                 <DropdownItem key="delete" isDanger isDisabled={readOnly} onClick={remove}>
                                                     {_("Delete")}
@@ -293,7 +386,7 @@ key="arf" isDisabled={!result.arf_path}
                                 <ToolbarItem>
                                     <SimpleSelect
                                         toggleProps={{ id: "result-filter-status" }}
-                                        options={STATUS_FILTERS.map(filter => ({
+                                        options={[...STATUS_FILTERS, ...previous ? ["changed" as const] : []].map(filter => ({
                                             value: filter,
                                             content: `${statusOptionLabel(filter)} (${statusCount(filter)})`,
                                         }))}
@@ -348,16 +441,37 @@ key="arf" isDisabled={!result.arf_path}
                             sortMethod={sortMethod}
                             emptyCaption={_("No rules match the current filters")}
                             isEmptyStateInTable
-                            rows={shown.map(rule => ({
-                                props: { key: rule.rule_id, id: `rule-${rule.rule_id}` },
-                                columns: [
-                                    { title: <ResultLabel result={rule.result} />, props: { className: "oscap-table-nowrap" } },
-                                    { title: rule.title || rule.rule_id },
-                                    { title: <SeverityLabel severity={rule.severity} /> },
-                                    { title: rule.group || _("Uncategorized") },
-                                ],
-                                expandedContent: <RuleDetails ruleId={rule.rule_id} message={rule.message} />,
-                            }))}
+                            onExpand={setExpandedRules}
+                            rows={shown.map(rule => {
+                                const change = changeOf(rule);
+                                return {
+                                    props: { key: rule.rule_id, id: `rule-${rule.rule_id}` },
+                                    columns: [
+                                        { title: <ResultLabel result={rule.result} />, props: { className: "oscap-table-nowrap" } },
+                                        {
+                                            title: (
+                                                <>
+                                                    {rule.title || rule.rule_id}
+                                                    {change && (
+                                                        <>
+                                                            {" "}
+                                                            <ChangeLabel change={change} before={previousResults.get(rule.rule_id)} />
+                                                        </>
+                                                    )}
+                                                </>
+                                            ),
+                                        },
+                                        { title: <SeverityLabel severity={rule.severity} /> },
+                                        { title: rule.group || _("Uncategorized") },
+                                    ],
+                                    expandedContent: (
+                                        <RuleDetails
+                                            ruleId={rule.rule_id} message={rule.message}
+                                            active={Boolean(expandedRules[rule.rule_id])}
+                                        />
+                                    ),
+                                };
+                            })}
                         />
                     </StackItem>
                 </Stack>

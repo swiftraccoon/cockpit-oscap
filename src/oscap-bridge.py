@@ -328,6 +328,7 @@ class FixRuleInfo(TypedDict):
 
 class FixInfo(TypedDict):
     result_id: str
+    fix_type: str
     script: str
     rules: list[FixRuleInfo]
 
@@ -414,6 +415,16 @@ def output_error(message: str) -> None:
     sys.exit(1)
 
 
+def _silence_stdout() -> None:
+    """Point stdout at /dev/null once the reader has gone away, so interpreter shutdown does not fail again."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except OSError:
+        pass
+
+
 def run_cmd(argv: list[str], *, timeout: int = CMD_TIMEOUT) -> tuple[int, str, str]:
     """Run a command and return (exit status, stdout, stderr)."""
     try:
@@ -487,7 +498,7 @@ def _positional(args: list[str]) -> list[str]:
         if skip:
             skip = False
         elif arg.startswith("--"):
-            skip = arg in ("--datastream", "--tailoring-path", "--rules", "--source")
+            skip = arg in ("--datastream", "--tailoring-path", "--rules", "--source", "--type")
         else:
             result.append(arg)
     return result
@@ -922,29 +933,20 @@ def _value_info(value: ET.Element, selector: str, set_value: str | None) -> Valu
 def list_profiles(ds_path: str, config: Config) -> list[ProfileInfo]:
     benchmark = load_benchmark(ds_path)
     index = _BenchmarkIndex(benchmark)
-    tailorings = config.get("tailorings", {})
     profiles: list[ProfileInfo] = []
     for prof in benchmark.findall(TAG_PROFILE):
         pid = prof.get("id", "")
         if not pid or prof.get("abstract") == "true":
             continue
-        tailoring_path = tailorings.get(pid)
-        tailored_id: str | None = None
-        if tailoring_path and Path(tailoring_path).is_file():
-            try:
-                tailored_id = parse_tailoring_file(tailoring_path)["profile_id"]
-            except BridgeError:
-                tailored_id = None
-        else:
-            tailoring_path = None
+        tailoring = _registered_tailoring(config, pid, ds_path)
         profiles.append(ProfileInfo(
             id=pid,
             title=_text(prof.find(TAG_TITLE)),
             description=_rich_text(prof.find(TAG_DESCRIPTION)),
             rule_count=sum(1 for v in index.selection(pid).values() if v),
             extends=prof.get("extends"),
-            tailoring_path=tailoring_path,
-            tailored_profile_id=tailored_id,
+            tailoring_path=tailoring["path"] if tailoring else None,
+            tailored_profile_id=tailoring["profile_id"] if tailoring else None,
         ))
     return profiles
 
@@ -1069,7 +1071,7 @@ def build_tailoring_xml(
 ) -> tuple[str, str]:
     """Return (tailored profile id, XCCDF 1.2 tailoring XML)."""
     ET.register_namespace("xccdf", NS_XCCDF)
-    tailoring = ET.Element(TAG_BENCHMARK.replace("Benchmark", "Tailoring"), {"id": TAILORING_ID})
+    tailoring = ET.Element(TAG_TAILORING, {"id": TAILORING_ID})
     ET.SubElement(tailoring, _x("benchmark"), {"href": datastream})
     version = ET.SubElement(tailoring, _x("version"), {"time": _iso(_now_utc())})
     version.text = "1"
@@ -1099,7 +1101,7 @@ def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
         root = ET.fromstring(xml_text)  # noqa: S314
     except ET.ParseError as exc:
         raise BridgeError(f"invalid tailoring XML: {exc}") from exc
-    if root.tag != _x("Tailoring"):
+    if root.tag != TAG_TAILORING:
         raise BridgeError("not an XCCDF 1.2 tailoring document")
     profile = root.find(TAG_PROFILE)
     if profile is None:
@@ -1135,6 +1137,33 @@ def parse_tailoring_file(path: str) -> TailoringInfo:
     except OSError as exc:
         raise BridgeError(f"cannot read tailoring file {path}: {exc}") from exc
     return parse_tailoring_xml(text, path)
+
+
+def _content_stem(name: str) -> str:
+    """ssg-rhel9-ds-1.2.xml, ssg-rhel9-ds.xml and ssg-rhel9-xccdf.xml all describe the same content."""
+    return re.sub(r"(?:-(?:ds|xccdf))?(?:-1\.2)?$", "", Path(name).stem)
+
+
+def _tailoring_matches(tailoring: TailoringInfo, ds_path: str) -> bool:
+    """Whether a tailoring was written against the content in ``ds_path`` (an empty href is trusted)."""
+    href = tailoring["benchmark_href"].strip()
+    return not href or _content_stem(href) == _content_stem(ds_path)
+
+
+def _registered_tailoring(config: Config, base_profile_id: str, ds_path: str) -> TailoringInfo | None:
+    """The usable tailoring registered for a profile, or None when missing, unreadable or for other content."""
+    path = config.get("tailorings", {}).get(base_profile_id)
+    if not path or not Path(path).is_file():
+        return None
+    try:
+        info = parse_tailoring_file(path)
+    except BridgeError as exc:
+        log.warning("ignoring tailoring %s: %s", path, exc)
+        return None
+    if not _tailoring_matches(info, ds_path):
+        log.warning("ignoring tailoring %s: it was created for %s, not %s", path, info["benchmark_href"], ds_path)
+        return None
+    return info
 
 
 def _register_tailoring(base_profile_id: str, path: Path) -> None:
@@ -1184,6 +1213,10 @@ def cmd_import_tailoring(args: list[str]) -> None:
     base_profile_id, source = positional[0], positional[1]
     xml_text = _read_stdin_or_file(source)
     info = parse_tailoring_xml(xml_text)
+    ds_path = resolve_datastream(_opt(args, "--datastream"))
+    if not _tailoring_matches(info, ds_path):
+        raise BridgeError(f"the tailoring was created for {Path(info['benchmark_href']).name}, "
+                          f"but this system scans with {Path(ds_path).name}")
     warning = ""
     if info["base_profile_id"] and info["base_profile_id"] != base_profile_id:
         warning = (f"The imported tailoring extends profile '{info['base_profile_id']}', "
@@ -1262,6 +1295,15 @@ def _coerce_result_items(raw: object) -> list[RuleResultItem]:
     return items
 
 
+def _existing_arf(arf_path: Path, legacy: object) -> str:
+    """The ARF file of a result: the canonical location, a legacy recorded path, or "" when it is gone."""
+    if arf_path.is_file():
+        return str(arf_path)
+    if isinstance(legacy, str) and legacy and Path(legacy).is_file():
+        return legacy
+    return ""
+
+
 def _load_result(result_id: str) -> ScanResult:
     """Load a saved result, filling defaults for files written by older versions."""
     json_path, arf_path = _result_paths(result_id)
@@ -1296,7 +1338,7 @@ def _load_result(result_id: str) -> ScanResult:
         xccdf_score=float(xccdf_score) if isinstance(xccdf_score, (int, float)) else None,
         counts=counts,
         results=results,
-        arf_path=str(arf_path) if arf_path.is_file() else str(raw.get("arf_path", "")),
+        arf_path=_existing_arf(arf_path, raw.get("arf_path")),
         json_path=str(json_path),
     )
 
@@ -1312,7 +1354,7 @@ def _summarize(result: ScanResult) -> ResultSummary:
         total=len(result["results"]),
         status=result["status"],
         tailored=result["tailored"],
-        has_arf=bool(result["arf_path"]) and Path(result["arf_path"]).is_file(),
+        has_arf=bool(result["arf_path"]),
     )
 
 
@@ -1522,13 +1564,16 @@ def _resolve_scan_request(args: list[str]) -> ScanRequest:
     profile_id = base_profile_id
     profile_title = _text(profile.find(TAG_TITLE))
 
+    tailoring: TailoringInfo | None = None
     tailoring_path = _opt(args, "--tailoring-path")
-    if tailoring_path is None and "--no-tailoring" not in args:
-        tailoring_path = config.get("tailorings", {}).get(base_profile_id)
-        if tailoring_path and not Path(tailoring_path).is_file():
-            tailoring_path = None
-    if tailoring_path:
+    if tailoring_path is not None:
         tailoring = parse_tailoring_file(tailoring_path)
+        if not _tailoring_matches(tailoring, datastream):
+            raise BridgeError(f"the tailoring was created for {tailoring['benchmark_href']}, not {datastream}")
+    elif "--no-tailoring" not in args:
+        tailoring = _registered_tailoring(config, base_profile_id, datastream)
+        tailoring_path = tailoring["path"] if tailoring else None
+    if tailoring is not None:
         profile_id = tailoring["profile_id"]
         profile_title = tailoring["title"] or profile_title
         selects = [
@@ -1556,6 +1601,7 @@ class _OscapRun:
         self.request = request
         self.started = started
         self.interrupted = False
+        self.output_closed = False
         self.proc: subprocess.Popen[str] | None = None
         self.current = 0
         self.last_state_write = 0.0
@@ -1584,8 +1630,14 @@ class _OscapRun:
     def _progress(self, rule_id: str, result: str) -> None:
         self.current += 1
         state = self._state(rule_id, result)
-        if self.request["source"] == "interactive":
-            output_json({"type": "progress", **state})
+        if self.request["source"] == "interactive" and not self.output_closed:
+            try:
+                output_json({"type": "progress", **state})
+            except OSError:
+                # Cockpit closed the channel; keep scanning so the result is still saved
+                self.output_closed = True
+                _silence_stdout()
+                log.warning("progress reader went away; the scan continues in the background")
         now = time.monotonic()
         if now - self.last_state_write >= STATE_WRITE_INTERVAL:
             self.last_state_write = now
@@ -1647,6 +1699,8 @@ def run_scan(args: list[str]) -> ScanResult:
     oscap_path = _require_oscap()
     request = _resolve_scan_request(args)
     lock_fd = _scan_lock()
+    runner: _OscapRun | None = None
+    settled = False
     try:
         _ensure_dir(RESULTS_DIR)
         started_dt = _now_utc()
@@ -1665,8 +1719,11 @@ def run_scan(args: list[str]) -> ScanResult:
         finished = _iso(_now_utc())
 
         def fail(message: str, status: str) -> BridgeError:
+            nonlocal settled
+            settled = True
             _write_scan_state({"running": False, "status": status, "finished": finished, "error": message,
-                               "profile_id": request["profile_id"], "source": request["source"]})
+                               "profile_id": request["profile_id"], "profile_title": request["profile_title"],
+                               "source": request["source"]})
             arf_path.unlink(missing_ok=True)
             return BridgeError(message)
 
@@ -1684,9 +1741,14 @@ def run_scan(args: list[str]) -> ScanResult:
                            "score": result["score"], "profile_id": request["profile_id"],
                            "profile_title": request["profile_title"], "source": request["source"],
                            "counts": result["counts"]})
+        settled = True
         log.info("scan complete: %s score=%.1f", result_id, result["score"])
         return result
     finally:
+        if runner is not None and not settled:
+            _write_scan_state({"running": False, "status": "failed", "finished": _iso(_now_utc()),
+                               "error": "the scan ended unexpectedly", "profile_id": request["profile_id"],
+                               "profile_title": request["profile_title"], "source": request["source"]})
         os.close(lock_fd)
 
 
@@ -1771,13 +1833,18 @@ def extract_arf_tailoring(arf_path: str) -> str | None:
     return name
 
 
-def generate_fix(result: ScanResult) -> FixInfo:
-    """Generate bash remediation for the rules that failed in a saved result."""
+FIX_TYPES = ("bash", "ansible")
+
+
+def generate_fix(result: ScanResult, fix_type: str = "bash") -> FixInfo:
+    """Generate remediation (bash script or Ansible playbook) for the rules that failed in a saved result."""
+    if fix_type not in FIX_TYPES:
+        raise BridgeError(f"unsupported fix type: {fix_type} (expected one of {', '.join(FIX_TYPES)})")
     oscap_path = _require_oscap()
     if not result["arf_path"] or not Path(result["arf_path"]).is_file():
         raise BridgeError("the results file for this scan is no longer available")
     test_result_id = result["test_result_id"] or parse_arf(result["arf_path"])["test_result_id"]
-    cmd = [oscap_path, "xccdf", "generate", "fix", "--fix-type", "bash", "--result-id", test_result_id]
+    cmd = [oscap_path, "xccdf", "generate", "fix", "--fix-type", fix_type, "--result-id", test_result_id]
     tailoring_file = extract_arf_tailoring(result["arf_path"])
     if tailoring_file:
         cmd += ["--tailoring-file", tailoring_file]
@@ -1790,17 +1857,18 @@ def generate_fix(result: ScanResult) -> FixInfo:
     if rc != 0:
         raise BridgeError(f"oscap generate fix failed: {stderr.strip()[-ERROR_TAIL:]}")
     titles = {r["rule_id"]: r["title"] for r in result["results"]}
-    rules = parse_fix_script(stdout)
+    # per-rule blocks (and risk classification) only apply to bash scripts
+    rules = parse_fix_script(stdout) if fix_type == "bash" else []
     for rule in rules:
         rule["title"] = titles.get(rule["id"], "")
-    return FixInfo(result_id=result["id"], script=stdout, rules=rules)
+    return FixInfo(result_id=result["id"], fix_type=fix_type, script=stdout, rules=rules)
 
 
 def cmd_generate_fix(args: list[str]) -> None:
     positional = _positional(args)
     if not positional:
         raise BridgeError("generate-fix requires a result id")
-    output_json(generate_fix(_load_result(positional[0])))
+    output_json(generate_fix(_load_result(positional[0]), _opt(args, "--type") or "bash"))
 
 
 def _rule_ids_arg(args: list[str]) -> list[str]:
@@ -1974,7 +2042,7 @@ def validate_calendar(spec: str) -> CalendarCheck:
     analyze = shutil.which("systemd-analyze")
     if analyze is None:
         return CalendarCheck(valid=True, normalized=spec.strip(), next_elapse="", error="")
-    rc, stdout, stderr = run_cmd([analyze, "calendar", spec.strip()])
+    rc, stdout, stderr = run_cmd([analyze, "calendar", "--", spec.strip()])
     if rc != 0:
         return CalendarCheck(valid=False, normalized="", next_elapse="",
                              error=(stderr or stdout).strip().splitlines()[-1] if (stderr or stdout).strip() else
@@ -2079,6 +2147,10 @@ def main(argv: list[str] | None = None) -> None:
         handler(args)
     except BridgeError as exc:
         output_error(str(exc))
+    except BrokenPipeError:
+        _silence_stdout()
+        log.warning("command=%s: the reader closed the output", command)
+        sys.exit(1)
     except Exception:
         log.error("command=%s unhandled exception:\n%s", command, traceback.format_exc())
         output_error(f"internal error: {traceback.format_exc().strip().splitlines()[-1]}")

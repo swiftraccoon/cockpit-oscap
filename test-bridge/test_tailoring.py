@@ -125,3 +125,43 @@ def test_delete_tailoring(run_bridge, bridge):
     assert "tailorings" not in run_bridge("get-config")
     assert run_bridge("delete-tailoring", PROFILE_BASE) == {"deleted": False, "profile_id": PROFILE_BASE}
     assert "error" in run_bridge("delete-tailoring", expect_rc=1)
+
+
+@pytest.mark.parametrize(("name", "stem"), [
+    ("ssg-rhel9-ds.xml", "ssg-rhel9"),
+    ("/usr/share/xml/scap/ssg/content/ssg-rhel9-ds-1.2.xml", "ssg-rhel9"),
+    ("ssg-rhel9-xccdf.xml", "ssg-rhel9"),
+    ("ssg-rhel9-xccdf-1.2.xml", "ssg-rhel9"),
+    ("file:///content/ssg-debian12-ds.xml", "ssg-debian12"),
+    ("custom-benchmark.xml", "custom-benchmark"),
+])
+def test_content_stem(bridge, name, stem):
+    assert bridge._content_stem(name) == stem
+
+
+def test_tailoring_matches_content(bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    info = bridge.parse_tailoring_xml(xml)
+    assert bridge._tailoring_matches(info, datastream)
+    assert bridge._tailoring_matches(info, "/elsewhere/ssg-test-ds-1.2.xml")
+    assert not bridge._tailoring_matches(info, "/elsewhere/ssg-other-ds.xml")
+    info["benchmark_href"] = ""
+    assert bridge._tailoring_matches(info, "/elsewhere/ssg-other-ds.xml")  # nothing to check against
+
+
+def test_import_tailoring_rejects_other_content(run_bridge, bridge):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS,
+                                                  "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    reply = run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml, expect_rc=1)
+    assert "ssg-rhel9-ds.xml" in reply["error"]
+    assert "ssg-test-ds.xml" in reply["error"]
+    assert "tailorings" not in run_bridge("get-config")
+    # matching content (a different copy of the same datastream) is fine
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS,
+                                                  "/backup/ssg-test-ds-1.2.xml")
+    assert run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)["warning"] == ""
+
+
+def test_tailoring_document_uses_xccdf_tailoring_element(bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    assert ET.fromstring(xml).tag == bridge.TAG_TAILORING  # noqa: S314

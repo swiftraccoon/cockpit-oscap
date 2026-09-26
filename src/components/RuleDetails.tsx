@@ -84,14 +84,17 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, message, description }: {
+export const RuleDetails = ({ ruleId, message, description, active = true }: {
     ruleId: string;
     /** A message recorded by the scanner for this rule (typically for errors). */
     message?: string;
     /** Already-known description, shown while the full details load. */
     description?: string;
+    /** Whether the details are visible; nothing is fetched until they are. */
+    active?: boolean;
 }) => {
-    const { data, error, loading } = useAsync(() => loadRule(ruleId), [ruleId]);
+    const { data, error, loading } = useAsync(
+        () => (active ? loadRule(ruleId) : Promise.resolve<RuleDetail | null>(null)), [ruleId, active]);
 
     return (
         <div className="oscap-expanded-details">

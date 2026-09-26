@@ -32,10 +32,10 @@ import * as timeformat from "timeformat";
 import { TIMER_UNIT, getConfig, listProfiles, manageTimer, setConfig, validateCalendar } from "../api";
 import { useApp } from "../app";
 import { useAsync, useDebounced } from "../app-hooks";
-import { TailoredLabel } from "../components/labels";
+import { TailoredLabel, When } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import { errorMessage, parseTimestamp } from "../helpers";
-import type { CalendarCheck, ScheduleFrequency, TimerConfig, TimerStatus } from "../types";
+import type { CalendarCheck, ConfigPatch, ScheduleFrequency, TimerConfig, TimerStatus } from "../types";
 
 const _ = cockpit.gettext;
 
@@ -100,13 +100,6 @@ function describeCalendar(raw: string): string {
         return raw;
     }
 }
-
-const When = ({ iso, fallback }: { iso: string; fallback: string }) => {
-    const date = parseTimestamp(iso);
-    if (!date)
-        return <span>{fallback}</span>;
-    return <span>{timeformat.dateTime(date)} <span className="oscap-muted">· {timeformat.distanceToNow(date)}</span></span>;
-};
 
 function timerStateLabel(timer: TimerStatus): React.ReactNode {
     if (!timer.installed)
@@ -179,14 +172,15 @@ export const SchedulePage = () => {
         return () => { cancelled = true };
     }, [debouncedCalendar, frequency]);
 
-    if ((data.loading && !data.data) || !timer)
-        return <Loading />;
-    if (data.error || !data.data)
+    if (data.error)
         return <ErrorState title={_("Failed to load the schedule")} error={data.error} onRetry={() => data.reload()} />;
+    if (!data.data || !timer)
+        return <Loading />;
 
-    const { profiles } = data.data;
+    const { profiles, config: savedConfig } = data.data;
+    const installed = timer.installed;
     const readOnly = app.superuser === false;
-    const profile = profiles.find(p => p.id === profileId);
+    const activeProfile = profiles.find(p => p.id === savedConfig.active_profile);
     const customInvalid = frequency === "custom" && (!calendar.trim() || (calendarCheck !== null && !calendarCheck.valid));
 
     async function toggle(enabled: boolean) {
@@ -213,10 +207,17 @@ export const SchedulePage = () => {
         else if (frequency === "custom")
             config.calendar = calendar.trim();
         try {
-            if (maxResults !== (data.data?.config.max_results ?? DEFAULT_MAX_RESULTS))
-                await setConfig({ max_results: maxResults });
-            setTimer(await manageTimer("configure", config));
-            setNotice(_("Schedule saved."));
+            // Retention and the active profile are plain settings; only the calendar needs the timer unit.
+            const patch: ConfigPatch = {};
+            if (maxResults !== (savedConfig.max_results ?? DEFAULT_MAX_RESULTS))
+                patch.max_results = maxResults;
+            if (!installed && profileId && profileId !== savedConfig.active_profile)
+                patch.active_profile = profileId;
+            if (Object.keys(patch).length > 0)
+                await setConfig(patch);
+            if (installed)
+                setTimer(await manageTimer("configure", config));
+            setNotice(installed ? _("Schedule saved.") : _("Settings saved."));
             app.bump();
         } catch (err) {
             setError(errorMessage(err));
@@ -303,8 +304,8 @@ variant="success" isInline title={notice}
                             <DescriptionListGroup>
                                 <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
                                 <DescriptionListDescription>
-                                    {profile
-                                        ? <>{profile.title}{profile.tailoring_path && <> {" "}<TailoredLabel /></>}</>
+                                    {activeProfile
+                                        ? <>{activeProfile.title}{activeProfile.tailoring_path && <> {" "}<TailoredLabel /></>}</>
                                         : <span className="oscap-muted">{_("No active profile")}</span>}
                                 </DescriptionListDescription>
                             </DescriptionListGroup>
@@ -313,7 +314,7 @@ variant="success" isInline title={notice}
                     <CardFooter className="oscap-card-actions">
                         <Button
 id="schedule-run-now" variant="secondary" size="sm" onClick={runNow}
-                                isDisabled={!timer.installed || readOnly || app.scanning}
+                                isDisabled={!installed || !activeProfile || readOnly || app.scanning}
                         >
                             {_("Run scheduled scan now")}
                         </Button>
@@ -448,7 +449,7 @@ id="schedule-run-now" variant="secondary" size="sm" onClick={runNow}
                             <ActionGroup>
                                 <Button
 id="schedule-save" variant="primary" type="submit" isLoading={saving}
-                                        isDisabled={saving || readOnly || !timer.installed || customInvalid}
+                                        isDisabled={saving || readOnly || (installed && customInvalid)}
                                 >
                                     {_("Save")}
                                 </Button>

@@ -302,3 +302,91 @@ def test_reconcile_stale_scan_state(bridge):
         assert json.loads(bridge.SCAN_STATE_PATH.read_text())["running"] is True
     finally:
         os.close(fd)
+
+
+def test_load_result_without_arf_has_empty_path(bridge):
+    _write_result(bridge, "2026-04-08T025531-base", arf_path="/nonexistent/legacy.arf.xml")
+    result = bridge._load_result("2026-04-08T025531-base")
+    assert result["arf_path"] == ""
+    assert bridge._summarize(result)["has_arf"] is False
+    with pytest.raises(bridge.BridgeError, match="no longer available"):
+        bridge.cmd_generate_report(["2026-04-08T025531-base"])
+
+
+def test_scan_ignores_tailoring_made_for_other_content(bridge):
+    mods = [{"idref": RULE_AUDIT, "action": "unselect"}]
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
+                                                  "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    path = bridge.TAILORING_DIR / "rhel9.xml"
+    bridge._atomic_write(path, xml)
+    bridge.save_config({"tailorings": {PROFILE_BASE: str(path)}, "active_profile": PROFILE_BASE})
+
+    # a registered tailoring for other content is skipped: the base profile is scanned instead
+    request = bridge._resolve_scan_request([])
+    assert request["profile_id"] == PROFILE_BASE
+    assert request["tailoring_path"] is None
+    assert request["total_rules"] == 3
+    # an explicitly requested one is an error
+    with pytest.raises(bridge.BridgeError, match="created for"):
+        bridge._resolve_scan_request([PROFILE_BASE, "--tailoring-path", str(path)])
+
+
+def test_progress_survives_closed_stdout(bridge, monkeypatch):
+    request = {"profile_id": PROFILE_BASE, "base_profile_id": PROFILE_BASE, "profile_title": "Base",
+               "datastream": "ds", "tailoring_path": None, "source": "interactive", "total_rules": 2}
+    written = []
+    silenced = []
+
+    def broken(_data):
+        written.append(_data)
+        raise BrokenPipeError
+
+    monkeypatch.setattr(bridge, "output_json", broken)
+    monkeypatch.setattr(bridge, "_silence_stdout", lambda: silenced.append(True))
+    runner = bridge._OscapRun(["oscap"], request, "2026-04-08T02:55:31+00:00")
+    runner._progress(RULE_AUDIT, "pass")
+    runner._progress(RULE_ROOT_LOGIN, "fail")
+    assert len(written) == 1
+    assert runner.output_closed is True
+    assert silenced == [True]
+    assert runner.current == 2
+    state = json.loads(bridge.SCAN_STATE_PATH.read_text())
+    assert state["running"] is True
+    assert state["current"] == 1  # writes are throttled; the first one landed
+
+
+def test_scan_state_settles_when_oscap_output_is_unusable(bridge, tmp_path, datastream, monkeypatch):
+    fake = tmp_path / "oscap"
+    fake.write_text(f"""#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--results-arf" ]; then out="$2"; fi
+  shift
+done
+echo "{RULE_AUDIT}:pass"
+echo "<broken" > "$out"
+exit 0
+""")
+    fake.chmod(0o755)
+    monkeypatch.setattr(bridge.shutil, "which", lambda name: str(fake) if name == "oscap" else None)
+    with pytest.raises(bridge.BridgeError, match="failed to parse"):
+        bridge.run_scan([PROFILE_BASE, "--datastream", datastream])
+    state = json.loads(bridge.SCAN_STATE_PATH.read_text())
+    assert state["running"] is False
+    assert state["status"] == "failed"
+    assert state["profile_title"] == "Base Profile"
+    assert "unexpectedly" in state["error"]
+    # the lock is released again
+    os.close(bridge._scan_lock())
+
+
+def test_main_handles_reader_going_away(bridge, monkeypatch):
+    def gone(_args):
+        raise BrokenPipeError
+
+    silenced = []
+    monkeypatch.setitem(bridge.HANDLERS, "get-config", gone)
+    monkeypatch.setattr(bridge, "_silence_stdout", lambda: silenced.append(True))
+    with pytest.raises(SystemExit) as exc:
+        bridge.main(["get-config"])
+    assert exc.value.code == 1
+    assert silenced == [True]
