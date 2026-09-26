@@ -459,14 +459,14 @@ def _ensure_dir(path: Path) -> None:
         raise BridgeError(f"administrative access is required to write to {path}") from exc
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    """Write a file atomically (temporary file + rename)."""
+def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    """Write a file atomically (temporary file + rename); the mode is set before the file appears."""
     _ensure_dir(path.parent)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        Path(tmp_name).chmod(0o644)
+        Path(tmp_name).chmod(mode)
         Path(tmp_name).replace(path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
@@ -1452,6 +1452,14 @@ def list_results() -> list[ResultSummary]:
     return summaries
 
 
+_REMEDIATION_NAME_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}T\d{6})-(?P<result>.+)$")
+
+
+def record_path_for(script: Path) -> Path:
+    """The JSON audit record that belongs to a remediation script."""
+    return script.with_suffix(".json")
+
+
 def prune_results(max_results: int) -> None:
     """Delete the oldest result files beyond ``max_results``; ids sort chronologically."""
     if not RESULTS_DIR.is_dir():
@@ -1465,7 +1473,7 @@ def prune_results(max_results: int) -> None:
         scripts = sorted(REMEDIATION_DIR.glob("*.sh"))
         for script in scripts[:-max_results] if max_results > 0 else []:
             script.unlink(missing_ok=True)
-            script.with_suffix(".json").unlink(missing_ok=True)
+            record_path_for(script).unlink(missing_ok=True)
 
 
 def _delete_remediations(result_id: str) -> None:
@@ -1476,7 +1484,7 @@ def _delete_remediations(result_id: str) -> None:
         match = _REMEDIATION_NAME_RE.match(script.stem)
         if match and match.group("result") == result_id:
             script.unlink(missing_ok=True)
-            script.with_suffix(".json").unlink(missing_ok=True)
+            record_path_for(script).unlink(missing_ok=True)
 
 
 def cmd_list_results(_args: list[str]) -> None:
@@ -2038,20 +2046,18 @@ def remediate(result: ScanResult, rule_ids: list[str]) -> RemediateResult:
     script_path = REMEDIATION_DIR / f"{_now_utc().strftime('%Y-%m-%dT%H%M%S')}-{result['id']}.sh"
     header = ["#!/usr/bin/env bash", f"# Remediation applied by cockpit-oscap for scan {result['id']}", ""]
     body = [f"# --- {rid} ---\n{snippets[rid]['fix_snippet']}\n" for rid in rule_ids]
-    _atomic_write(script_path, "\n".join(header + body))
-    script_path.chmod(0o700)
+    _atomic_write(script_path, "\n".join(header + body), mode=0o700)
 
     # the audit trail next to the script, kept current after every rule so an interrupted run
-    # still records what was applied; fix output can contain system details, hence 0600
-    record_path = script_path.with_suffix(".json")
+    # still records what was applied; fix output can contain system details, hence root-only
+    record_path = record_path_for(script_path)
     outcomes: list[RuleRemediation] = []
 
     def write_record(*, done: bool) -> None:
         record = {"timestamp": _iso(_now_utc()), "result_id": result["id"], "script_path": str(script_path),
                   "planned": len(rule_ids), "rules": outcomes,
                   "success": all(o["success"] for o in outcomes) if done else None}
-        _atomic_write(record_path, json.dumps(record, indent=1) + "\n")
-        record_path.chmod(0o600)
+        _atomic_write(record_path, json.dumps(record, indent=1) + "\n", mode=0o600)
 
     write_record(done=False)
     for i, rid in enumerate(rule_ids, start=1):
@@ -2087,11 +2093,6 @@ class RemediationRun(TypedDict):
     rules: list[RuleRemediation]
 
 
-_REMEDIATION_NAME_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}T\d{6})-(?P<result>.+)$")
-
-
-def record_path_for(script: Path) -> Path:
-    return script.with_suffix(".json")
 
 
 def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
@@ -2103,7 +2104,14 @@ def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
         match = _REMEDIATION_NAME_RE.match(script.stem)
         if not match or (result_id and match.group("result") != result_id):
             continue
-        record = _read_json_file(script.with_suffix(".json")) or {}
+        # records and scripts are root-only: a read-only session sees no history rather than a wrong one
+        try:
+            loaded = json.loads(record_path_for(script).read_text()) if record_path_for(script).is_file() else {}
+        except PermissionError:
+            continue
+        except (OSError, ValueError):
+            loaded = {}
+        record: JsonDict = loaded if isinstance(loaded, dict) else {}
         outcomes: list[RuleRemediation] = []
         planned = 0
         success: bool | None = None
@@ -2120,7 +2128,8 @@ def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
             raw_planned = record.get("planned", len(outcomes))
             planned = int(raw_planned) if isinstance(raw_planned, (int, str)) else len(outcomes)
             success = bool(record["success"]) if record.get("success") is not None else None
-            timestamp = str(record.get("timestamp", ""))
+            raw_timestamp = record.get("timestamp")
+            timestamp = raw_timestamp if isinstance(raw_timestamp, str) else ""
         except (TypeError, ValueError, AttributeError):
             log.warning("remediation record %s is malformed; listing it without outcomes", record_path_for(script))
             outcomes, planned, success = [], 0, None
@@ -2129,6 +2138,8 @@ def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
             # script from before the audit trail existed: count its rule blocks, outcome unknown
             try:
                 planned = sum(1 for line in script.read_text().splitlines() if line.startswith("# --- "))
+            except PermissionError:
+                continue
             except OSError:
                 planned = 0
         runs.append(RemediationRun(

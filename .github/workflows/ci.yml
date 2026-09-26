@@ -96,7 +96,7 @@ jobs:
         run: >
           dnf install -y --setopt=install_weak_deps=False
           make nodejs npm rpm-build gettext libappstream-glib systemd-rpm-macros
-          python3 xz tar dnf5-plugins
+          python3 xz tar jq dnf5-plugins
 
       - name: Pacify git's permission check
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

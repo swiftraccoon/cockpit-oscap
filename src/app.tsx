@@ -58,8 +58,6 @@ const Shell = ({ children }: { children: React.ReactNode }) => (
 export interface AppContextValue {
     backend: BackendInfo;
     reloadBackend: () => void;
-    /** Scan summaries as last listed by the shell (newest first), or null before the first listing. */
-    results: ResultSummary[] | null;
     /** Incremented whenever results or configuration change; pages reload when it does. */
     version: number;
     bump: () => void;
@@ -126,19 +124,21 @@ const AppShell = () => {
     const scanning = Boolean(scanState?.running);
 
     // Refresh everything when a scan (interactive or scheduled) finishes, also when it ended
-    // before the file watch ever showed it running (a scheduled scan that failed at once)
+    // before the file watch ever showed it running (a scheduled scan that failed at once): every
+    // terminal state carries a fresh `finished` timestamp
     const scanStatus = scanState?.status;
+    const scanFinished = scanState?.finished;
     const wasScanning = useRef(false);
-    const lastStatus = useRef<string | undefined>(undefined);
+    const lastFinished = useRef<string | undefined>(undefined);
     useEffect(() => {
         const ended = wasScanning.current && !scanning;
-        const changed = lastStatus.current !== undefined && lastStatus.current !== scanStatus;
+        const changed = lastFinished.current !== undefined && lastFinished.current !== scanFinished;
         wasScanning.current = scanning;
-        if (scanStatus !== undefined)
-            lastStatus.current = scanStatus;
+        if (scanFinished !== undefined)
+            lastFinished.current = scanFinished;
         if (!scanning && (ended || changed))
             bump();
-    }, [scanning, scanStatus, bump]);
+    }, [scanning, scanFinished, bump]);
 
     // The former "scan" page became a dialog; keep old links working
     useEffect(() => {
@@ -146,47 +146,49 @@ const AppShell = () => {
             cockpit.location.replace(["overview"]);
     }, [path]);
 
+    const summariesRef = useRef(summaries);
+    summariesRef.current = summaries;
     const runScan = useCallback((profileId?: string) => {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} results={summaries} onFinished={bump} />);
-    }, [Dialogs, bump, summaries]);
+        Dialogs.show(
+            <ScanDialog {...profileId && { initialProfileId: profileId }} results={summariesRef.current} onFinished={bump} />
+        );
+    }, [Dialogs, bump]);
 
     const info = backend.data;
 
-    // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
-    // so the icon appears without visiting it). Keyed on reloads and scan-state transitions only,
-    // not on every progress write.
-    // Every change of results or scan state ends up as a `version` bump (coalesced), so keying on
-    // it means one bridge call per change. The summaries are shared through the context.
-    const scanRef = useRef({ scanning, scanStatus });
-    scanRef.current = { scanning, scanStatus };
+    // The shell keeps its own listing of scans (one bridge call per `version` bump, which every
+    // change of results or scan state ends up as) for the scan dialog and the navigation status
+    const scanningRef = useRef(scanning);
+    scanningRef.current = scanning;
     useEffect(() => {
-        if (!info || !info.oscap || !info.content.present || scanRef.current.scanning)
+        if (!info || !info.oscap || !info.content.present || scanningRef.current)
             return undefined;
         let cancelled = false;
         listResults()
-                .then(results => {
-                    if (cancelled)
-                        return;
-                    setSummaries(results);
-                    page_status.set_own(complianceStatus(results, scanRef.current.scanStatus));
-                })
-                .catch(() => { if (!cancelled) page_status.set_own(null); });
+                .then(results => { if (!cancelled) setSummaries(results); })
+                .catch(() => { if (!cancelled) setSummaries([]); });
         return () => { cancelled = true };
     }, [info, version]);
+
+    // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
+    // so the icon appears without visiting it)
+    useEffect(() => {
+        if (summaries)
+            page_status.set_own(complianceStatus(summaries, scanStatus));
+    }, [summaries, scanStatus]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,
             reloadBackend: backend.reload,
-            results: summaries,
             version,
             bump,
             superuser: superuserAllowed,
             scanning,
             runScan,
         }
-        : null, [info, backend.reload, summaries, version, bump, superuserAllowed, scanning, runScan]);
+        : null, [info, backend.reload, version, bump, superuserAllowed, scanning, runScan]);
 
     if (!context || !info) {
         return (

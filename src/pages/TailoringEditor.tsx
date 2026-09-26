@@ -13,6 +13,7 @@ import { Content } from "@patternfly/react-core/dist/esm/components/Content/inde
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
 import { FormSelect, FormSelectOption } from "@patternfly/react-core/dist/esm/components/FormSelect/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
+import { Modal, ModalBody, ModalFooter, ModalHeader } from "@patternfly/react-core/dist/esm/components/Modal/index.js";
 import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
 import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
 import { Switch } from "@patternfly/react-core/dist/esm/components/Switch/index.js";
@@ -28,6 +29,7 @@ import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
+import type { DialogResult } from "dialogs";
 
 import { createTailoring, deleteTailoring, importTailoring, listProfiles, parseTailoringFile, profileRules } from "../api";
 import { useApp } from "../app";
@@ -104,6 +106,47 @@ function computeModifications(base: EditorState, current: EditorState, values: V
     return mods;
 }
 
+/** One line per pending customization, for the review dialog. */
+function describeModifications(mods: TailoringModification[], rules: RuleInfo[], values: ValueInfo[],
+    base: EditorState, current: EditorState): { key: string; item: string; change: string }[] {
+    const ruleTitle = new Map(rules.map(r => [r.id, r.title || ruleShortName(r.id)]));
+    const valueTitle = new Map(values.map(v => [v.id, v.title || v.id]));
+    return mods.map(mod => {
+        if (mod.action === "select" || mod.action === "unselect") {
+            return {
+                key: mod.idref,
+                item: ruleTitle.get(mod.idref) ?? mod.idref,
+                change: mod.action === "select" ? _("Rule enabled") : _("Rule disabled"),
+            };
+        }
+        return {
+            key: mod.idref,
+            item: valueTitle.get(mod.idref) ?? mod.idref,
+            change: cockpit.format(_("Value changed from $0 to $1"), base.values[mod.idref] ?? "", current.values[mod.idref] ?? ""),
+        };
+    });
+}
+
+const ReviewChangesDialog = ({ changes, dialogResult }: {
+    changes: { key: string; item: string; change: string }[];
+    dialogResult: DialogResult<void>;
+}) => (
+    <Modal isOpen variant="medium" position="top" onClose={() => dialogResult.resolve()} id="tailoring-review-dialog">
+        <ModalHeader title={cockpit.format(cockpit.ngettext("$0 unsaved change", "$0 unsaved changes", changes.length), changes.length)} />
+        <ModalBody>
+            <ListingTable
+                aria-label={_("Pending changes")}
+                variant="compact"
+                columns={[_("Item"), _("Change")]}
+                rows={changes.map(change => ({ props: { key: change.key }, columns: [change.item, change.change] }))}
+            />
+        </ModalBody>
+        <ModalFooter>
+            <Button variant="link" onClick={() => dialogResult.resolve()}>{_("Close")}</Button>
+        </ModalFooter>
+    </Modal>
+);
+
 function statesEqual(a: EditorState | null, b: EditorState | null): boolean {
     if (!a || !b)
         return a === b;
@@ -176,6 +219,8 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const title = data.data.rules.title || profileShortName(profileId);
     const readOnly = app.superuser === false;
     const modifications = computeModifications(base, current, values);
+    // what saving would change, as opposed to every customization of the profile
+    const pending = computeModifications(saved, current, values);
     const changedRules = modifications.filter(m => m.action === "select" || m.action === "unselect").length;
     const changedValues = modifications.length - changedRules;
     const unsaved = !statesEqual(current, saved);
@@ -586,6 +631,17 @@ id="tailoring-save" variant="primary" onClick={save} isLoading={busy}
                                     <Button variant="secondary" onClick={() => setCurrent(saved)} isDisabled={!unsaved || busy}>
                                         {_("Discard changes")}
                                     </Button>
+                                    {unsaved && pending.length > 0 && (
+                                        <Button
+                                            id="tailoring-review" variant="link" isInline
+                                            onClick={() => Dialogs.run(ReviewChangesDialog, {
+                                                changes: describeModifications(pending, rules, values, saved, current),
+                                            })}
+                                        >
+                                            {cockpit.format(cockpit.ngettext("Review $0 unsaved change", "Review $0 unsaved changes",
+                                                                             pending.length), pending.length)}
+                                        </Button>
+                                    )}
                                     <ActionsMenu ariaLabel={_("Customization actions")} toggleButtonId="tailoring-actions" dropdownItems={kebab} />
                                     <input ref={fileInput} type="file" accept=".xml,application/xml" hidden onChange={importFile} />
                                 </div>

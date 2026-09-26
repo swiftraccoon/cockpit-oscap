@@ -108,6 +108,11 @@ class TestOscap(testlib.MachineCase):
         b.click("#oscap-tabs button:contains('Overview')")
         b.wait_visible("#overview-latest")
         b.wait_in_text("#overview-latest", "%")
+        # a rule needing attention links to itself on the result page, expanded
+        if b.is_present("#overview-failed tbody:first-of-type > tr"):
+            b.click("#overview-failed tbody:first-of-type > tr")
+            b.wait_visible("#result-rules")
+            b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
 
     def testProfileEditor(self) -> None:
         b = self.browser

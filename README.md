@@ -55,9 +55,10 @@ scheduled scans.
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),
   apply the selected fixes one rule at a time, then re-scan with the same
-  profile and customizations to verify. The applied script is kept for
-  auditing; a Bash script or Ansible playbook can also be downloaded to run
-  elsewhere.
+  profile and customizations to verify. Every run is recorded with its
+  outcome per rule and shown as the scan's remediation history, with the
+  applied script kept for auditing; a Bash script or Ansible playbook can
+  also be downloaded to run elsewhere.
 - **Scheduled scans** – a systemd timer with daily, weekly, monthly or custom
   `OnCalendar` schedules (validated with `systemd-analyze`), the profile to use
   and result retention, all editable from the page.

@@ -112,8 +112,10 @@ function runOutcome(run: RemediationRun): React.ReactNode {
         return <Label status="success" isCompact>{_("All fixes applied")}</Label>;
     if (run.success === false)
         return <Label status="danger" isCompact>{cockpit.format(cockpit.ngettext("$0 fix failed", "$0 fixes failed", run.failed), run.failed)}</Label>;
-    if (run.rules.length > 0 && run.rules.length < run.planned)
-        return <Label status="warning" isCompact>{cockpit.format(_("Interrupted after $0 of $1"), run.rules.length, run.planned)}</Label>;
+    if (run.rules.length > 0 && run.rules.length < run.planned) {
+        // still running, or interrupted: the record has no way to tell
+        return <Label status="warning" isCompact>{cockpit.format(_("$0 of $1 fixes recorded"), run.rules.length, run.planned)}</Label>;
+    }
     return <Label color="grey" isCompact>{_("Outcome not recorded")}</Label>;
 }
 
@@ -195,7 +197,9 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
             return;
         focused.current = focusRule;
         const row = document.getElementById(`rule-${focusRule}`);
-        row?.querySelector<HTMLButtonElement>("td.pf-v6-c-table__toggle button")?.click();
+        const toggle = row?.querySelector<HTMLButtonElement>("td.pf-v6-c-table__toggle button");
+        if (toggle && toggle.getAttribute("aria-expanded") !== "true")
+            toggle.click();
         row?.scrollIntoView({ block: "center" });
     }, [focusRule, result]);
     const groups = useMemo(() => {

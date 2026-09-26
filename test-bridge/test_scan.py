@@ -462,3 +462,14 @@ def test_main_handles_reader_going_away(bridge, monkeypatch):
         bridge.main(["get-config"])
     assert exc.value.code == 1
     assert silenced == [True, True]
+
+
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    ("2026-03-19T18:30:00+00:00", "2026-03-19T18:31:30+00:00", 90),
+    ("2026-03-19T18:30:00", "2026-03-19T18:32:00", 120),  # naive timestamps from older oscap builds
+    ("2026-03-19T18:30:00+00:00", "2026-03-19T18:32:00", 0),  # mixed: not comparable
+    ("2026-03-19T18:30:00+00:00", "2026-03-19T18:29:00+00:00", 0),  # clock went backwards
+    ("", "2026-03-19T18:29:00+00:00", 0),
+])
+def test_duration_seconds(bridge, start, end, expected):
+    assert bridge._duration_seconds(start, end) == expected

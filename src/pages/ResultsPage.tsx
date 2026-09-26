@@ -14,6 +14,7 @@ import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
 import { EmptyStatePanel } from "cockpit-components-empty-state";
+import { SimpleSelect } from "cockpit-components-simple-select";
 import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps } from "cockpit-components-table";
 import { useDialogs } from "dialogs";
@@ -71,6 +72,7 @@ export const ResultsPage = () => {
     const [search, setSearch] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [selected, setSelected] = useState<Set<string>>(() => new Set());
+    const [profileFilter, setProfileFilter] = useState("all");
 
     if (results.loading && !results.data)
         return <Loading />;
@@ -119,7 +121,11 @@ variant="primary" onClick={() => app.runScan()}
             await guarded(async () => { await deleteResult(summary.id); app.bump() });
     }
 
-    const shown = all.filter(s => matchesSearch(search, s.profile_title, s.profile_id, s.id));
+    // one entry per base profile, named after its most recent scan
+    const profileOptions = Array.from(new Map(all.map(s => [s.base_profile_id, s.profile_title || s.base_profile_id])))
+            .sort((a, b) => a[1].localeCompare(b[1]));
+    const shown = all.filter(s => (profileFilter === "all" || s.base_profile_id === profileFilter) &&
+        matchesSearch(search, s.profile_title, s.profile_id, s.id));
     const byId = new Map(shown.map(s => [s.id, s]));
     const readOnly = app.superuser === false;
     // only rows that are listed count: a search hides rows, and deleted ones are gone
@@ -194,6 +200,19 @@ variant="primary" onClick={() => app.runScan()}
                                 onClear={() => setSearch("")}
                             />
                         </ToolbarItem>
+                        {profileOptions.length > 1 && (
+                            <ToolbarItem>
+                                <SimpleSelect
+                                    toggleProps={{ id: "results-filter-profile" }}
+                                    options={[
+                                        { value: "all", content: _("All profiles") },
+                                        ...profileOptions.map(([id, title]) => ({ value: id, content: title })),
+                                    ]}
+                                    selected={profileFilter}
+                                    onSelect={value => setProfileFilter(value)}
+                                />
+                            </ToolbarItem>
+                        )}
                         {selectedShown.length > 0 && (
                             <ToolbarItem>
                                 <Button id="results-delete-selected" variant="danger" size="sm" onClick={removeSelected}>

@@ -20,7 +20,7 @@ import { FormHelper } from "cockpit-components-form-helper";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 
-import { getConfig, listProfiles, scan } from "../api";
+import { getConfig, listProfiles, listResults, scan } from "../api";
 import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
 import { errorMessage, formatDuration, ruleShortName } from "../helpers";
@@ -42,8 +42,13 @@ export const ScanDialog = ({ initialProfileId, results, onFinished }: {
 }) => {
     const Dialogs = useDialogs();
     const setup = useAsync(async () => {
-        const [profiles, config] = await Promise.all([listProfiles(), getConfig()]);
-        return { profiles, config };
+        const [profiles, config, known] = await Promise.all([
+            listProfiles(),
+            getConfig(),
+            // the shell's listing may not have happened yet right after the page loaded
+            results ?? listResults().catch((): ResultSummary[] => []),
+        ]);
+        return { profiles, config, results: known };
     }, []);
 
     const [phase, setPhase] = useState<Phase>("setup");
@@ -66,7 +71,7 @@ export const ScanDialog = ({ initialProfileId, results, onFinished }: {
 
     const profiles: ProfileInfo[] = setup.data?.profiles ?? [];
     const profile = profiles.find(p => p.id === profileId);
-    const lastScan = (results ?? []).find(r => r.status === "complete" && r.base_profile_id === profileId &&
+    const lastScan = (setup.data?.results ?? []).find(r => r.status === "complete" && r.base_profile_id === profileId &&
         r.duration_seconds > 0);
     const lastDuration = lastScan ? lastScan.duration_seconds : null;
 
