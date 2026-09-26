@@ -91,7 +91,6 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
     }
 }
 
-/** Scans of the same base profile against the same content form one series, customized or not. */
 function runOutcome(run: RemediationRun): React.ReactNode {
     if (run.success === true)
         return <Label status="success" isCompact>{_("All fixes applied")}</Label>;
@@ -196,15 +195,17 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     }, [resultId, app.version]);
     const candidates = useMemo(() => data.data?.candidates ?? [], [data.data]);
     const comparedWith = candidates.find(s => s.id === compareId) ?? candidates[0] ?? null;
+    // loaded on its own so that picking another scan does not reload the page; tagged with the result
+    // it belongs to, since a comparison of the previous result must not show up while this one loads
     const comparison = useAsync(async () => {
         if (!comparedWith)
-            return null;
+            return { resultId, previous: null };
         try {
-            return await getResult(comparedWith.id);
+            return { resultId, previous: await getResult(comparedWith.id) };
         } catch {
-            return null;
+            return { resultId, previous: null };
         }
-    }, [comparedWith?.id]);
+    }, [resultId, comparedWith?.id]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
     const [severity, setSeverity] = useState("all");
@@ -214,7 +215,9 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const [expandedRules, setExpandedRules] = useState<RowRecord>({});
 
     const result = data.data?.result ?? null;
-    const previous = comparison.data ?? null;
+    const previous = comparison.data?.resultId === resultId ? comparison.data.previous : null;
+    // the scan just before is the default; anything else was picked (or came with the link)
+    const chosenComparison = previous !== null && candidates.length > 0 && previous.id !== candidates[0]?.id;
     const remediations = data.data?.remediations ?? [];
     // Once per deep link: expand the rule through the table's own toggle (its expansion state is
     // internal) and bring it into view
@@ -238,9 +241,9 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         () => new Map((previous?.results ?? []).map(r => [r.rule_id, r.result])), [previous]);
     // the comparison filter only makes sense while there is something to compare with
     useEffect(() => {
-        if (candidates.length === 0 && status === "changed")
+        if (!previous && status === "changed")
             setStatus("all");
-    }, [candidates, status]);
+    }, [previous, status]);
 
     if (data.loading && !result)
         return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
@@ -259,7 +262,8 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         const at = parseTimestamp(summary.timestamp);
         return cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : summary.timestamp, formatScore(summary.score));
     };
-    const compareWith = (id: string) => cockpit.location.go(["results", loaded.id], { ...options, compare: id });
+    // in the location so a link keeps it, replacing rather than pushing: a pick is not a page
+    const compareWith = (id: string) => cockpit.location.replace(["results", loaded.id], { ...options, compare: id });
     const changeOf = (rule: RuleResultItem) => ruleChange(previousResults.get(rule.rule_id), rule.result);
     const changes = { fixed: 0, regressed: 0, changed: 0 };
     if (previous) {
@@ -361,7 +365,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         case "other":
             return _("Other");
         case "changed":
-            return _("Changed since previous scan");
+            return chosenComparison ? _("Changed since the chosen scan") : _("Changed since previous scan");
         default:
             return resultLabel(filter);
         }
@@ -428,7 +432,7 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
                                 <Stat label={_("Results")}><CountLabels counts={result.counts} /></Stat>
                                 <Stat label={_("Status")}><ScanStatusLabel status={result.status} /></Stat>
                                 {previous && (
-                                    <Stat label={compareId ? _("Since the chosen scan") : _("Since previous scan")}>
+                                    <Stat label={chosenComparison ? _("Since the chosen scan") : _("Since previous scan")}>
                                         <span className="oscap-inline-list" id="result-changes">
                                             {changes.fixed > 0 && (
                                                 <Label status="success" isCompact>
@@ -458,13 +462,19 @@ variant="link" isInline className="oscap-stat-detail"
                                                 )}
                                         </span>
                                         <span className="oscap-muted oscap-stat-detail oscap-compare">
-                                            {_("Compared with")}
+                                            <span id="result-compare-label">{_("Compared with")}</span>
                                             {candidates.length > 1
                                                 ? (
                                                     <SimpleSelect
-                                                        toggleProps={{ id: "result-compare", variant: "plainText", size: "sm" }}
+                                                        toggleProps={{
+                                                            id: "result-compare",
+                                                            variant: "plainText",
+                                                            size: "sm",
+                                                            "aria-labelledby": "result-compare-label result-compare",
+                                                            isDisabled: comparison.loading,
+                                                        }}
                                                         options={candidates.map(s => ({ value: s.id, content: scanLabel(s) }))}
-                                                        selected={previous.id}
+                                                        selected={comparedWith?.id ?? previous.id}
                                                         onSelect={compareWith}
                                                     />
                                                 )

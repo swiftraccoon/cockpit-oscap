@@ -133,6 +133,35 @@ class TestOscap(testlib.MachineCase):
         self.machine.execute("grep -q '<xccdf:remark>Not applicable on this host</xccdf:remark>' "
                              "/var/lib/cockpit-oscap/tailoring/*.xml")
 
+        self._check_comparison_picker()
+
+    def _check_comparison_picker(self) -> None:
+        """The comparison picks any earlier scan of the profile: fake two, from copies of the newest
+        result (a second real scan would double the test's time), and follow a link naming one."""
+        b = self.browser
+        self.machine.execute(
+            "cd /var/lib/cockpit-oscap/results && python3 - <<'PYEOF'\n"
+            "import glob, json, shutil\n"
+            "newest = sorted(glob.glob('*.json'))[-1]\n"
+            "profile = newest[len('2026-01-01T000000-'):-len('.json')]\n"
+            "for day, hour in (('01', '00'), ('02', '00')):\n"
+            "    stem = f'2001-01-{day}T{hour}0000-{profile}'\n"
+            "    data = json.load(open(newest))\n"
+            "    data['id'] = stem\n"
+            "    data['timestamp'] = f'2001-01-{day}T{hour}:00:00+00:00'\n"
+            "    json.dump(data, open(stem + '.json', 'w'))\n"
+            "    shutil.copy(newest[:-len('.json')] + '.arf.xml', stem + '.arf.xml')\n"
+            "PYEOF")
+        current = self.machine.execute("ls /var/lib/cockpit-oscap/results/2026*.json | sort | tail -1").strip()
+        current = current.rsplit("/", 1)[1][:-len(".json")]
+        profile = current[len("2026-01-01T000000-"):]
+        b.go(f"#/results/{current}")
+        b.wait_visible("button#result-compare")
+        b.wait_in_text("#result-compare", "Jan 2, 2001")
+        b.go(f"#/results/{current}?compare=2001-01-01T000000-{profile}")
+        b.wait_in_text("#result-compare", "Jan 1, 2001")
+        b.wait_in_text("#result-summary", "Since the chosen scan")
+
     def testProfileEditor(self) -> None:
         b = self.browser
 

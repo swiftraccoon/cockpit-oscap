@@ -188,10 +188,10 @@ export function sameSeries(a: SeriesMember, b: SeriesMember): boolean {
 export function comparableScans(result: SeriesMember & { id: string; timestamp: string },
     summaries: ResultSummary[]): ResultSummary[] {
     const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
-    return summaries
-            .filter(s => s.id !== result.id && sameSeries(s, result) && s.status === "complete" &&
-                (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at)
-            .sort((a, b) => (parseTimestamp(b.timestamp)?.getTime() ?? 0) - (parseTimestamp(a.timestamp)?.getTime() ?? 0));
+    const timed = summaries
+            .map(s => ({ s, time: parseTimestamp(s.timestamp)?.getTime() ?? 0 }))
+            .filter(({ s, time }) => s.id !== result.id && sameSeries(s, result) && s.status === "complete" && time < at);
+    return timed.sort((a, b) => b.time - a.time).map(({ s }) => s);
 }
 
 /** Results from before the content path was recorded (empty) belong to every series. */
