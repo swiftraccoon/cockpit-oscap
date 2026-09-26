@@ -179,9 +179,34 @@ def test_tailor_rule_keeps_what_the_editor_does_not_model(run_bridge, bridge, da
     assert version.get("time") != "2020-01-01T00:00:00"
     assert info["profile_id"] == "xccdf_org.example_profile_site"
     assert info["modifications"] == [{"idref": RULE_ROOT_LOGIN, "action": "unselect", "remark": "new reason"}]
-    # the datastream a result names may be gone; the customization applies to the installed content
-    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable", "--datastream", "/nonexistent/ds.xml")
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable")
     assert [m["idref"] for m in info["modifications"]] == [RULE_ROOT_LOGIN, RULE_AUDIT]
+
+
+def test_tailor_rule_places_the_select_where_the_schema_allows(run_bridge, bridge, datastream):
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<xccdf:Tailoring xmlns:xccdf="{NS}" id="t">
+  <xccdf:benchmark href="{datastream}"/>
+  <xccdf:version time="2020-01-01T00:00:00">1</xccdf:version>
+  <xccdf:Profile id="p" extends="{PROFILE_BASE}">
+    <xccdf:title>With metadata</xccdf:title>
+    <xccdf:set-value idref="{VALUE_TIMEOUT}">12</xccdf:set-value>
+    <xccdf:metadata><note>kept last</note></xccdf:metadata>
+  </xccdf:Profile>
+</xccdf:Tailoring>
+"""
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable")
+    profile = ET.fromstring(bridge.Path(info["path"]).read_text()).find(f"{{{NS}}}Profile")  # noqa: S314
+    assert profile is not None
+    assert [c.tag.split("}")[1] for c in profile] == ["title", "set-value", "select", "metadata"]
+    # with nothing to follow, the select goes before the metadata
+    xml = xml.replace(f'<xccdf:set-value idref="{VALUE_TIMEOUT}">12</xccdf:set-value>', "")
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    info = run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "disable")
+    profile = ET.fromstring(bridge.Path(info["path"]).read_text()).find(f"{{{NS}}}Profile")  # noqa: S314
+    assert profile is not None
+    assert [c.tag.split("}")[1] for c in profile] == ["title", "select", "metadata"]
 
 
 def test_parse_round_trip(bridge, datastream):

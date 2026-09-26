@@ -309,7 +309,6 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
             profileTitle: loaded.profile_title,
             ruleId: rule.rule_id,
             ruleTitle: rule.title,
-            ...loaded.datastream && { datastream: loaded.datastream },
         });
         if (!excluded)
             return;

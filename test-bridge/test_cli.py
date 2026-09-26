@@ -47,8 +47,14 @@ def test_positional_and_option_parsing(bridge):
     args = ["profile", "--datastream", "/ds.xml", "--no-tailoring", "--rules", "[]", "extra"]
     assert bridge._positional(args) == ["profile", "extra"]
     assert bridge._opt(args, "--datastream") == "/ds.xml"
-    assert bridge._opt(args, "--missing") is None
+    assert bridge._opt(args, "--rules") == "[]"
+    assert bridge._opt(args, "--type") is None
     assert bridge._opt(["--datastream"], "--datastream") is None
+    # an option's value is never taken for another option, and unknown option names are a programming error
+    assert bridge._opt(["--remark", "--datastream", "--datastream", "/ds"], "--datastream") == "/ds"
+    assert bridge._positional(["p", "--remark", "--datastream", "--datastream", "/ds"]) == ["p"]
+    with pytest.raises(ValueError, match="not an option"):
+        bridge._opt(args, "--missing")
 
 
 def test_internal_errors_are_reported_as_json(bridge, capsys, monkeypatch):

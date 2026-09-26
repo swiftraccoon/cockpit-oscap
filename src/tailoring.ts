@@ -12,6 +12,9 @@ import type { RuleInfo, TailoringModification, ValueInfo, ValueOption } from "./
 
 const _ = cockpit.gettext;
 
+/** The bridge's limit for a justification (MAX_REMARK_LENGTH there). */
+export const MAX_REMARK_LENGTH = 4000;
+
 export interface EditorState {
     /** Rule id → enabled. */
     selection: Record<string, boolean>;

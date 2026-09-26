@@ -19,6 +19,7 @@ import type { DialogResult } from "dialogs";
 
 import { tailorRule } from "../api";
 import { errorMessage } from "../helpers";
+import { MAX_REMARK_LENGTH } from "../tailoring";
 import { ErrorAlert } from "./states";
 
 const _ = cockpit.gettext;
@@ -28,13 +29,11 @@ export interface ExcludeRuleDialogProps {
     profileTitle: string;
     ruleId: string;
     ruleTitle: string;
-    /** The content the rule belongs to; the configured one when unset. */
-    datastream?: string;
 }
 
 /** Use with `Dialogs.run(ExcludeRuleDialog, {...})`; resolves to true once the rule is excluded. */
 export const ExcludeRuleDialog = (props: ExcludeRuleDialogProps & { dialogResult: DialogResult<boolean> }) => {
-    const { baseProfileId, profileTitle, ruleId, ruleTitle, datastream, dialogResult } = props;
+    const { baseProfileId, profileTitle, ruleId, ruleTitle, dialogResult } = props;
     const [remark, setRemark] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -44,7 +43,7 @@ export const ExcludeRuleDialog = (props: ExcludeRuleDialogProps & { dialogResult
         setBusy(true);
         setError(null);
         try {
-            await tailorRule(baseProfileId, ruleId, false, remark, datastream);
+            await tailorRule(baseProfileId, ruleId, false, remark);
             dialogResult.resolve(true);
         } catch (err) {
             setError(errorMessage(err));
@@ -71,6 +70,7 @@ export const ExcludeRuleDialog = (props: ExcludeRuleDialogProps & { dialogResult
                             value={remark}
                             isRequired
                             autoFocus
+                            maxLength={MAX_REMARK_LENGTH}
                             resizeOrientation="vertical"
                             placeholder={_("Why this rule does not apply here, or how its risk is accepted")}
                             onChange={(_ev, text) => setRemark(text)}

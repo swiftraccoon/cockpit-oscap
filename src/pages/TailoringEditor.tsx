@@ -43,6 +43,7 @@ import { RuleDetails } from "../components/RuleDetails";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import type { ChangeDescription, EditorState } from "../tailoring";
 import {
+    MAX_REMARK_LENGTH,
     applyModifications,
     baseState,
     computeModifications,
@@ -141,7 +142,7 @@ const JustificationField = ({ id, value, enabled, readOnly, onCommit }: {
                     id={id}
                     value={draft}
                     isDisabled={readOnly}
-                    maxLength={4000}
+                    maxLength={MAX_REMARK_LENGTH}
                     placeholder={enabled ? _("Why this rule is enabled here") : _("Why this rule is disabled here")}
                     onChange={(_ev, text) => change(text)}
                     onBlur={() => commit(draft)}

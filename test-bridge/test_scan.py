@@ -108,10 +108,26 @@ def test_list_results_sorted_newest_first(bridge):
     assert summaries[0]["has_arf"] is False
 
 
-def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
+def _tailored_arf(tmp_path: Any, selects: str) -> str:
+    """The synthetic ARF with a tailoring embedded, the SSH timeout rule skipped and RULE_NEVER
+    unselected by the content itself."""
     tailoring = f"""
         <xccdf:Tailoring id="t">
           <xccdf:Profile id="{PROFILE_BASE}_customized" extends="{PROFILE_BASE}">
+            {selects}
+          </xccdf:Profile>
+        </xccdf:Tailoring>
+        <arf:report id="xccdf1">"""
+    never = f'<xccdf:Rule id="{RULE_NEVER}" severity="low"'
+    arf = tmp_path / "tailored.arf.xml"
+    arf.write_text(SYNTHETIC_ARF.replace('<arf:report id="xccdf1">', tailoring, 1)
+                   .replace("<xccdf:result>error</xccdf:result>", "<xccdf:result>notselected</xccdf:result>")
+                   .replace(never, f'{never} selected="false"'))
+    return str(arf)
+
+
+def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
+    parsed = bridge.parse_arf(_tailored_arf(tmp_path, f"""
             <xccdf:select idref="{RULE_NEVER}" selected="false">
               <xccdf:remark>the base profile never selected this one</xccdf:remark>
             </xccdf:select>
@@ -128,21 +144,19 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
             <xccdf:select idref="{RULE_AUDIT}" selected="false">
               <xccdf:remark>still evaluated</xccdf:remark>
             </xccdf:select>
-          </xccdf:Profile>
-        </xccdf:Tailoring>
-        <arf:report id="xccdf1">"""
-    arf = tmp_path / "tailored.arf.xml"
-    # the SSH timeout rule was skipped this time, and the base content never selects RULE_NEVER
-    never = f'<xccdf:Rule id="{RULE_NEVER}" severity="low"'
-    arf.write_text(SYNTHETIC_ARF.replace('<arf:report id="xccdf1">', tailoring, 1)
-                   .replace("<xccdf:result>error</xccdf:result>", "<xccdf:result>notselected</xccdf:result>")
-                   .replace(never, f'{never} selected="false"'))
-    parsed = bridge.parse_arf(str(arf))
-    # a group select reaches its rules, the last select for a rule counts, rules that were evaluated
-    # or that the base profile never selected are no exclusions
+            <xccdf:select idref="g3" selected="true"/>"""))
+    # a group select reaches its rules, the last select for a rule counts (and a parent group switched
+    # on does not undo it), rules that were evaluated or that the base profile never selected are no
+    # exclusions
     assert parsed["exclusions"] == [
         {"rule_id": RULE_TIMEOUT, "title": "Set SSH idle timeout", "remark": "the last select wins"}]
     assert [r["rule_id"] for r in parsed["results"]][:2] == [RULE_AUDIT, RULE_ROOT_LOGIN]
+    # a group's remark reaches the rules it disables when they have no select of their own
+    parsed = bridge.parse_arf(_tailored_arf(tmp_path, f"""
+            <xccdf:select idref="g4" selected="false"><xccdf:remark>SSH is not installed</xccdf:remark></xccdf:select>
+            <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="true"/>"""))
+    assert parsed["exclusions"] == [
+        {"rule_id": RULE_TIMEOUT, "title": "Set SSH idle timeout", "remark": "SSH is not installed"}]
     # stored results from before this field carry none; a malformed field is ignored
     _write_result(bridge, "2026-04-08T025531-base")
     assert bridge._load_result("2026-04-08T025531-base")["exclusions"] == []
@@ -151,14 +165,48 @@ def test_parse_arf_records_the_rules_the_tailoring_excluded(bridge, tmp_path):
     assert loaded["exclusions"] == [{"rule_id": RULE_NEVER, "title": "", "remark": "why"}]
 
 
-def test_get_result_reports_what_the_customization_excludes_today(run_bridge, bridge):
+def test_get_result_reports_what_the_customization_excludes_today(run_bridge, bridge, datastream, tmp_path):
     _write_result(bridge, "2026-04-08T025531-base", base_profile_id=PROFILE_BASE)
     assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == []
     run_bridge("tailor-rule", PROFILE_BASE, RULE_ROOT_LOGIN, "disable", "--remark", "waived")
     run_bridge("tailor-rule", PROFILE_BASE, RULE_AUDIT, "enable")
     assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == [RULE_ROOT_LOGIN]
-    # only get-result computes it; listings and stored files do not carry it
-    assert "currently_excluded" not in json.loads((bridge.RESULTS_DIR / "2026-04-08T025531-base.json").read_text())
+    # a group select reaches its rules, a later select for the rule wins, and the base profile's own
+    # unselected rules do not count
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<xccdf:Tailoring xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2" id="t">
+  <xccdf:benchmark href="{datastream}"/>
+  <xccdf:version time="2020-01-01T00:00:00">1</xccdf:version>
+  <xccdf:Profile id="p" extends="{PROFILE_BASE}">
+    <xccdf:title>t</xccdf:title>
+    <xccdf:select idref="xccdf_org.test.content_group_ssh" selected="false"/>
+    <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="false"/>
+    <xccdf:select idref="{RULE_ROOT_LOGIN}" selected="true"/>
+    <xccdf:select idref="{RULE_NEVER}" selected="false"/>
+  </xccdf:Profile>
+</xccdf:Tailoring>
+"""
+    run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    excluded = run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"]
+    assert RULE_TIMEOUT in excluded
+    assert RULE_ROOT_LOGIN in excluded  # its group is off, whatever its own select says
+    assert RULE_NEVER not in excluded
+    # a customization scans do not apply excludes nothing, and an unreadable one is no error
+    bridge.Path(run_bridge("get-config")["tailorings"][PROFILE_BASE]).write_bytes(b"\xff\xfe<nope/>")
+    assert run_bridge("get-result", "2026-04-08T025531-base")["currently_excluded"] == []
+    # only get-result computes it: a result the scanner writes does not carry it
+    plain = tmp_path / "plain.arf.xml"
+    plain.write_text(SYNTHETIC_ARF)
+    parsed = bridge.parse_arf(str(plain))
+    request = {"profile_id": PROFILE_BASE, "base_profile_id": PROFILE_BASE, "profile_title": "Base",
+               "datastream": datastream, "tailoring_path": None, "tailoring_origin": None, "temp_files": [],
+               "source": "test", "total_rules": 3}
+    bridge._save_result(request, parsed, result_id="2026-04-08T025533-base", timestamp="2026-04-08T02:55:33+00:00",
+                        status="complete")
+    stored = json.loads((bridge.RESULTS_DIR / "2026-04-08T025533-base.json").read_text())
+    assert "currently_excluded" not in stored
+    assert stored["exclusions"] == []
+
 
 
 def test_prune_results_keeps_newest(bridge):
