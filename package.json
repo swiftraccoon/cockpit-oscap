@@ -21,7 +21,8 @@
     "stylelint": "stylelint src/*.{css,scss}",
     "stylelint:fix": "stylelint --fix src/*.{css,scss}",
     "test": "python3 -m pytest",
-    "check": "npm run typecheck && npm run eslint && npm run stylelint && npm test"
+    "check": "npm run typecheck && npm run eslint && npm run stylelint && npm run test:unit && npm test",
+    "test:unit": "node test/unit/run.mjs"
   },
   "devDependencies": {
     "@types/react": "18.3.13",

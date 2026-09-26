@@ -145,6 +145,19 @@ Data lives in `/var/lib/cockpit-oscap`: `config.json` (active profile,
 datastream override, retention, tailoring files), `results/` (ARF + JSON per
 scan), `tailoring/` and `remediation/` (applied scripts).
 
+## Releasing
+
+Releases are cut from annotated tags named after the version (no `v` prefix):
+
+```bash
+git tag -a 1.0 -m "Release notes go here"
+git push origin 1.0
+```
+
+The `release` workflow then builds `make dist` and publishes the tarball with
+the tag's annotation as the release note. `git describe` also feeds the version
+into the tarball name and the RPM spec.
+
 ## License
 
 LGPL-2.1-or-later

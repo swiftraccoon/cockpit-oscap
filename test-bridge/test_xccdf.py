@@ -181,3 +181,11 @@ def test_rule_detail_fix_systems(bridge, datastream):
     assert root_login["has_fix"] is False
     assert root_login["fix_systems"] == ["urn:xccdf:fix:script:ansible"]
     assert bridge.rule_detail(datastream, RULE_TIMEOUT)["fix_systems"] == []
+
+
+def test_rule_info_falls_back_when_recorded_content_is_gone(run_bridge):
+    info = run_bridge("rule-info", RULE_AUDIT, "--datastream", "/gone/ssg-old-ds.xml")
+    assert info["id"] == RULE_AUDIT
+    assert info["has_fix"] is True
+    # other commands keep insisting on the content they were given
+    assert "error" in run_bridge("profile-rules", PROFILE_BASE, "--datastream", "/gone/ssg-old-ds.xml", expect_rc=1)

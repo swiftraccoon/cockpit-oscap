@@ -54,6 +54,7 @@ import {
     parseTimestamp,
     resultLabel,
     ruleChange,
+    sameContent,
     scoredTotal,
     severityLabel,
 } from "../helpers";
@@ -84,7 +85,7 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
 
 /** Scans of the same base profile against the same content form one series, customized or not. */
 function sameSeries(a: { base_profile_id: string; datastream: string }, b: { base_profile_id: string; datastream: string }) {
-    return a.base_profile_id === b.base_profile_id && a.datastream === b.datastream;
+    return a.base_profile_id === b.base_profile_id && sameContent(a.datastream, b.datastream);
 }
 
 /** The most recent completed scan of the same profile that ran before `result`, if any. */
@@ -481,15 +482,17 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                         { title: <SeverityLabel severity={rule.severity} /> },
                                         { title: rule.group || _("Uncategorized") },
                                     ],
-                                    expandedContent: (
-                                        <RuleDetails
-                                            ruleId={rule.rule_id} message={rule.message}
-                                            datastream={loaded.datastream || undefined}
-                                            active={Boolean(expandedRules[rule.rule_id])}
-                                            {...canRemediate && normalizeResult(rule.result) === "fail" &&
-                                                { onRemediate: () => remediateRules([rule.rule_id]) }}
-                                        />
-                                    ),
+                                    // details exist only for expanded rows: large profiles have hundreds of rules
+                                    expandedContent: expandedRules[rule.rule_id]
+                                        ? (
+                                            <RuleDetails
+                                                ruleId={rule.rule_id} message={rule.message}
+                                                datastream={loaded.datastream || app.backend.content.datastream_path}
+                                                {...canRemediate && normalizeResult(rule.result) === "fail" &&
+                                                    { onRemediate: () => remediateRules([rule.rule_id]) }}
+                                            />
+                                        )
+                                        : <span />,
                                 };
                             })}
                         />

@@ -131,9 +131,14 @@ export function scoredTotal(counts: ResultCounts): number {
     return counts.pass + counts.fail + counts.error;
 }
 
-/** Offer `content` as a download named `filename`. */
-function csvCell(value: string | number): string {
-    const text = String(value);
+/** Results from before the content path was recorded (empty) belong to every series. */
+export function sameContent(a: string, b: string): boolean {
+    return !a || !b || a === b;
+}
+
+function csvCell(value: string): string {
+    // a leading =, +, -, @ or control character would make spreadsheets evaluate the cell as a formula
+    const text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -145,6 +150,7 @@ export function resultsToCsv(result: { results: RuleResultItem[] }): string {
     return rows.map(row => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
+/** Offer `content` as a download named `filename`. */
 export function downloadFile(filename: string, content: string, type = "application/octet-stream"): void {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);

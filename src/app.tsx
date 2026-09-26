@@ -144,16 +144,19 @@ const AppShell = () => {
     const info = backend.data;
 
     // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
-    // so the icon appears without visiting it)
+    // so the icon appears without visiting it). A finished scan bumps `version`, so keying on it
+    // costs one bridge call per reload rather than one per scan-state write.
+    const scanStateRef = useRef(scanState);
+    scanStateRef.current = scanState;
     useEffect(() => {
-        if (!info || !info.oscap || !info.content.present || scanning)
+        if (!info || !info.oscap || !info.content.present || scanStateRef.current?.running)
             return undefined;
         let cancelled = false;
         listResults()
-                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanState)); })
+                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanStateRef.current)); })
                 .catch(() => { if (!cancelled) page_status.set_own(null); });
         return () => { cancelled = true };
-    }, [info, version, scanning, scanState]);
+    }, [info, version]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,

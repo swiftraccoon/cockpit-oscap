@@ -1025,7 +1025,13 @@ def cmd_rule_info(args: list[str]) -> None:
     positional = _positional(args)
     if not positional:
         raise BridgeError("rule-info requires a rule id argument")
-    ds_path = resolve_datastream(_opt(args, "--datastream"))
+    requested = _opt(args, "--datastream")
+    if requested and not Path(requested).is_file():
+        # results record the content they were scanned with; once it is gone the configured
+        # content still describes the rule (ids are shared across SSG products)
+        log.info("datastream %s is gone; describing %s from the configured content", requested, positional[0])
+        requested = None
+    ds_path = resolve_datastream(requested)
     output_json(rule_detail(ds_path, positional[0]))
 
 

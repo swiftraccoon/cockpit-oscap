@@ -39,6 +39,9 @@ jobs:
       - name: Stylelint
         run: npm run stylelint
 
+      - name: Unit tests (helpers)
+        run: npm run test:unit
+
       - name: Translation template
         run: make po/oscap.pot
 

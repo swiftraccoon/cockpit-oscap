@@ -42,7 +42,7 @@ import {
     When,
 } from "../components/labels";
 import { ErrorState, Loading } from "../components/states";
-import { compareSeverity, parseTimestamp, scoredTotal } from "../helpers";
+import { compareSeverity, parseTimestamp, sameContent, scoredTotal } from "../helpers";
 import type { RuleResultItem, TimerStatus } from "../types";
 
 const _ = cockpit.gettext;
@@ -119,14 +119,14 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
     }
 
     const previous = results.find(r => r.id !== latest.id && r.status === "complete" &&
-        r.base_profile_id === latest.base_profile_id && r.datastream === latest.datastream);
+        r.base_profile_id === latest.base_profile_id && sameContent(r.datastream, latest.datastream));
     const scannedAt = parseTimestamp(latest.timestamp);
     const failed: RuleResultItem[] = latest.results
             .filter(r => r.result === "fail" || r.result === "error")
             .sort((a, b) => (a.result === b.result ? compareSeverity(a.severity, b.severity) : a.result === "fail" ? -1 : 1));
     const recent = results.slice(0, RECENT_SCANS);
     const trend: TrendPoint[] = results
-            .filter(r => r.base_profile_id === latest.base_profile_id && r.datastream === latest.datastream &&
+            .filter(r => r.base_profile_id === latest.base_profile_id && sameContent(r.datastream, latest.datastream) &&
                 r.status === "complete")
             .slice(0, TREND_POINTS)
             .reverse()

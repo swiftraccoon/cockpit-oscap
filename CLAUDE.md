@@ -90,8 +90,8 @@ Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailori
 ### Frontend
 
 React + PatternFly 6, reusing cockpit's shared components from `pkg/lib`
-(`ListingTable`, `EmptyStatePanel`, `KebabDropdown`, `SimpleSelect`, `dialogs`,
-`timeformat`, `superuser`). Routing via `cockpit.location`: `overview`, `profiles`,
+(`ListingTable`, `EmptyStatePanel`, `SimpleSelect`, `dialogs`, `timeformat`,
+`superuser`, `notifications`). Routing via `cockpit.location`: `overview`, `profiles`,
 `profiles/<id>` (tailoring editor), `results`, `results/<id>`, `schedule`. Scanning is a
 dialog available from every tab (the old `scan` route redirects to `overview`).
 `AppContext` (`useApp()`) exposes backend info, a `version` counter pages reload on,
