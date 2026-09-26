@@ -37,14 +37,15 @@ scheduled scans.
   between several installed datastreams.
 - **Profile customization** – enable or disable rules and adjust values
   (password lengths, timeouts, crypto policies, …) in an editor that groups
-  rules by category, shows their description, rationale and references, and
-  saves a standard XCCDF tailoring file. Tailoring files can be imported from
-  and exported to SCAP Workbench.
+  rules by category, shows their description, rationale and references, lets
+  you review the unsaved changes before saving, and saves a standard XCCDF
+  tailoring file. Tailoring files can be imported from and exported to SCAP
+  Workbench.
 - **Scanning** – run a scan from any page and follow live progress with a
   remaining-time estimate; scans started by the scheduler show the same
   progress banner. Results are stored as ARF plus a JSON summary and pruned
   to a configurable number.
-- **Results** – sortable history, per-rule results with on-demand details and
+- **Results** – sortable history filterable by profile, per-rule results with on-demand details and
   scanner messages, filters by result, severity and category, and a comparison
   with the previous scan of the same profile (new failures, rules now passing).
   Every scan offers its HTML report, ARF results, a CSV of its rule results,

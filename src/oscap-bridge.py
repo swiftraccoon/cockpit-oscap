@@ -473,11 +473,19 @@ def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
         raise
 
 
-def _read_json_file(path: Path) -> JsonDict | None:
-    """Read a JSON object from a file; return None when missing or invalid."""
+def _read_json_file(path: Path, *, raise_permission: bool = False) -> JsonDict | None:
+    """Read a JSON object from a file; return None when missing or invalid.
+
+    With ``raise_permission`` a file the caller may not read raises ``PermissionError``
+    instead of being treated as absent, so callers can tell "no data" from "not allowed".
+    """
     try:
         with path.open() as f:
             data = json.load(f)
+    except PermissionError:
+        if raise_permission:
+            raise
+        return None
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -1469,11 +1477,8 @@ def prune_results(max_results: int) -> None:
     for old in ids[:-max_results] if max_results > 0 else []:
         for path in (RESULTS_DIR / f"{old}.json", RESULTS_DIR / f"{old}.arf.xml"):
             path.unlink(missing_ok=True)
-    if REMEDIATION_DIR.is_dir():
-        scripts = sorted(REMEDIATION_DIR.glob("*.sh"))
-        for script in scripts[:-max_results] if max_results > 0 else []:
-            script.unlink(missing_ok=True)
-            record_path_for(script).unlink(missing_ok=True)
+        # the audit trail follows its scan: runs of a kept result stay, however many there are
+        _delete_remediations(old)
 
 
 def _delete_remediations(result_id: str) -> None:
@@ -2106,12 +2111,9 @@ def list_remediations(result_id: str | None = None) -> list[RemediationRun]:
             continue
         # records and scripts are root-only: a read-only session sees no history rather than a wrong one
         try:
-            loaded = json.loads(record_path_for(script).read_text()) if record_path_for(script).is_file() else {}
+            record = _read_json_file(record_path_for(script), raise_permission=True) or {}
         except PermissionError:
             continue
-        except (OSError, ValueError):
-            loaded = {}
-        record: JsonDict = loaded if isinstance(loaded, dict) else {}
         outcomes: list[RuleRemediation] = []
         planned = 0
         success: bool | None = None

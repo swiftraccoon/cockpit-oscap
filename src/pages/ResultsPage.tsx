@@ -32,6 +32,7 @@ import {
     errorMessage,
     matchesSearch,
     parseTimestamp,
+    profileChoices,
     resultsToCsv,
     safeFilename,
     withMember,
@@ -121,10 +122,10 @@ variant="primary" onClick={() => app.runScan()}
             await guarded(async () => { await deleteResult(summary.id); app.bump() });
     }
 
-    // one entry per base profile, named after its most recent scan
-    const profileOptions = Array.from(new Map(all.map(s => [s.base_profile_id, s.profile_title || s.base_profile_id])))
-            .sort((a, b) => a[1].localeCompare(b[1]));
-    const shown = all.filter(s => (profileFilter === "all" || s.base_profile_id === profileFilter) &&
+    const profileOptions = profileChoices(all);
+    // a filter whose profile has no scans left (all deleted) falls back to every profile
+    const activeFilter = profileOptions.length > 1 && profileOptions.some(([id]) => id === profileFilter) ? profileFilter : "all";
+    const shown = all.filter(s => (activeFilter === "all" || s.base_profile_id === activeFilter) &&
         matchesSearch(search, s.profile_title, s.profile_id, s.id));
     const byId = new Map(shown.map(s => [s.id, s]));
     const readOnly = app.superuser === false;
@@ -208,7 +209,7 @@ variant="primary" onClick={() => app.runScan()}
                                         { value: "all", content: _("All profiles") },
                                         ...profileOptions.map(([id, title]) => ({ value: id, content: title })),
                                     ]}
-                                    selected={profileFilter}
+                                    selected={activeFilter}
                                     onSelect={value => setProfileFilter(value)}
                                 />
                             </ToolbarItem>
@@ -248,7 +249,9 @@ variant="primary" onClick={() => app.runScan()}
                     ]}
                     sortBy={{ index: 0, direction: SortByDirection.desc }}
                     sortMethod={sortMethod}
-                    emptyCaption={_("No scans match the search")}
+                    emptyCaption={activeFilter === "all"
+                        ? _("No scans match the search")
+                        : _("No scans of the selected profile match the search")}
                     isEmptyStateInTable
                     onRowClick={(ev, row) => {
                         // a click on the row's checkbox selects; anywhere else opens the scan

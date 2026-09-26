@@ -106,11 +106,19 @@ function computeModifications(base: EditorState, current: EditorState, values: V
     return mods;
 }
 
+/** A value as the review dialog shows it: its option name when it is one of the content's choices. */
+function describeValue(value: ValueInfo | undefined, text: string): string {
+    if (text === "")
+        return _("(empty)");
+    const option = value?.options.find(o => o.value === text);
+    return option ? `${option.selector.replace(/_/g, " ")} (${text})` : JSON.stringify(text);
+}
+
 /** One line per pending customization, for the review dialog. */
 function describeModifications(mods: TailoringModification[], rules: RuleInfo[], values: ValueInfo[],
     base: EditorState, current: EditorState): { key: string; item: string; change: string }[] {
     const ruleTitle = new Map(rules.map(r => [r.id, r.title || ruleShortName(r.id)]));
-    const valueTitle = new Map(values.map(v => [v.id, v.title || v.id]));
+    const valuesById = new Map(values.map(v => [v.id, v]));
     return mods.map(mod => {
         if (mod.action === "select" || mod.action === "unselect") {
             return {
@@ -119,10 +127,13 @@ function describeModifications(mods: TailoringModification[], rules: RuleInfo[],
                 change: mod.action === "select" ? _("Rule enabled") : _("Rule disabled"),
             };
         }
+        const value = valuesById.get(mod.idref);
         return {
             key: mod.idref,
-            item: valueTitle.get(mod.idref) ?? mod.idref,
-            change: cockpit.format(_("Value changed from $0 to $1"), base.values[mod.idref] ?? "", current.values[mod.idref] ?? ""),
+            item: value?.title || mod.idref,
+            change: cockpit.format(_("Value changed from $0 to $1"),
+                                   describeValue(value, base.values[mod.idref] ?? ""),
+                                   describeValue(value, current.values[mod.idref] ?? "")),
         };
     });
 }

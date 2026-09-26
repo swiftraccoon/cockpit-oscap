@@ -262,6 +262,29 @@ def test_remediation_history(bridge, monkeypatch, capsys):
     assert other.exists()
 
 
+def test_list_remediations_without_read_access(bridge, monkeypatch):
+    # records and scripts are root-only; an unprivileged listing must not invent a history
+    bridge.REMEDIATION_DIR.mkdir()
+    recorded = bridge.REMEDIATION_DIR / "2026-04-01T000000-2026-04-08T025531-base.sh"
+    recorded.write_text("#!/usr/bin/env bash\n# --- a ---\n")
+    recorded.with_suffix(".json").write_text(json.dumps({
+        "timestamp": "2026-04-01T00:00:00+00:00", "planned": 1, "success": True,
+        "rules": [{"rule_id": RULE_AUDIT, "success": True, "exit_status": 0, "output": "", "errors": ""}]}))
+    legacy = bridge.REMEDIATION_DIR / "2026-03-01T000000-2026-04-08T025531-base.sh"
+    legacy.write_text("#!/usr/bin/env bash\n# --- a ---\n# --- b ---\n")
+    assert [(r["id"], r["planned"]) for r in bridge.list_remediations()] == [(recorded.stem, 1), (legacy.stem, 2)]
+
+    real_open = bridge.Path.open
+
+    def as_unprivileged(self, *args, **kwargs):
+        if self.parent == bridge.REMEDIATION_DIR:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(bridge.Path, "open", as_unprivileged)
+    assert bridge.list_remediations() == []
+
+
 def test_remediate_argument_validation(run_bridge, bridge):
     result_id = _seed_result(bridge)
     assert "error" in run_bridge("remediate", expect_rc=1)

@@ -33,22 +33,19 @@ const _ = cockpit.gettext;
 
 type Phase = "setup" | "running" | "done" | "error";
 
-export const ScanDialog = ({ initialProfileId, results, onFinished }: {
+export const ScanDialog = ({ initialProfileId, onFinished }: {
     initialProfileId?: string;
-    /** Scan summaries known to the shell, for "the last scan of this profile took ..." (dialogs render
-     *  outside the application context, so they are handed in). */
-    results?: ResultSummary[] | null;
     onFinished?: (result: ScanResult) => void;
 }) => {
     const Dialogs = useDialogs();
     const setup = useAsync(async () => {
-        const [profiles, config, known] = await Promise.all([
+        const [profiles, config, results] = await Promise.all([
             listProfiles(),
             getConfig(),
-            // the shell's listing may not have happened yet right after the page loaded
-            results ?? listResults().catch((): ResultSummary[] => []),
+            // only for the "last scan took ..." hint: no history is not a reason to refuse a scan
+            listResults().catch((): ResultSummary[] => []),
         ]);
-        return { profiles, config, results: known };
+        return { profiles, config, results };
     }, []);
 
     const [phase, setPhase] = useState<Phase>("setup");

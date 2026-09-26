@@ -146,20 +146,17 @@ const AppShell = () => {
             cockpit.location.replace(["overview"]);
     }, [path]);
 
-    const summariesRef = useRef(summaries);
-    summariesRef.current = summaries;
     const runScan = useCallback((profileId?: string) => {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(
-            <ScanDialog {...profileId && { initialProfileId: profileId }} results={summariesRef.current} onFinished={bump} />
-        );
+        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} onFinished={bump} />);
     }, [Dialogs, bump]);
 
     const info = backend.data;
 
     // The shell keeps its own listing of scans (one bridge call per `version` bump, which every
-    // change of results or scan state ends up as) for the scan dialog and the navigation status
+    // change of results or scan state ends up as) for the navigation status; a failed listing
+    // keeps the last known one rather than reporting a clean slate
     const scanningRef = useRef(scanning);
     scanningRef.current = scanning;
     useEffect(() => {
@@ -168,7 +165,7 @@ const AppShell = () => {
         let cancelled = false;
         listResults()
                 .then(results => { if (!cancelled) setSummaries(results); })
-                .catch(() => { if (!cancelled) setSummaries([]); });
+                .catch(() => undefined);
         return () => { cancelled = true };
     }, [info, version]);
 

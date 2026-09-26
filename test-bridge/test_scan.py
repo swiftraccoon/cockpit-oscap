@@ -108,17 +108,63 @@ def test_list_results_sorted_newest_first(bridge):
 
 
 def test_prune_results_keeps_newest(bridge):
-    for day in range(1, 6):
-        _write_result(bridge, f"2026-04-0{day}T000000-base")
-        (bridge.RESULTS_DIR / f"2026-04-0{day}T000000-base.arf.xml").write_text("<x/>")
     bridge.REMEDIATION_DIR.mkdir()
+
+    def write_run(name: str) -> None:
+        script = bridge.REMEDIATION_DIR / f"{name}.sh"
+        script.write_text("true")
+        script.with_suffix(".json").write_text("{}")
+
     for day in range(1, 6):
-        (bridge.REMEDIATION_DIR / f"2026-04-0{day}T000000-fix.sh").write_text("true")
+        result_id = f"2026-04-0{day}T000000-base"
+        _write_result(bridge, result_id)
+        (bridge.RESULTS_DIR / f"{result_id}.arf.xml").write_text("<x/>")
+        write_run(f"2026-04-10T000000-{result_id}")
+    # the newest scan was remediated twice more: more runs than the retention count are kept
+    write_run("2026-04-11T000000-2026-04-05T000000-base")
+    write_run("2026-04-12T000000-2026-04-05T000000-base")
     bridge.prune_results(KEEP)
     remaining = sorted(p.name for p in bridge.RESULTS_DIR.iterdir())
     assert remaining == ["2026-04-04T000000-base.arf.xml", "2026-04-04T000000-base.json",
                          "2026-04-05T000000-base.arf.xml", "2026-04-05T000000-base.json"]
-    assert len(list(bridge.REMEDIATION_DIR.iterdir())) == KEEP
+    # the audit trail follows its scan: pruned scans lose their runs, kept ones keep all of theirs
+    kept_runs = sorted(p.stem for p in bridge.REMEDIATION_DIR.iterdir())
+    assert kept_runs == ["2026-04-10T000000-2026-04-04T000000-base", "2026-04-10T000000-2026-04-04T000000-base",
+                         "2026-04-10T000000-2026-04-05T000000-base", "2026-04-10T000000-2026-04-05T000000-base",
+                         "2026-04-11T000000-2026-04-05T000000-base", "2026-04-11T000000-2026-04-05T000000-base",
+                         "2026-04-12T000000-2026-04-05T000000-base", "2026-04-12T000000-2026-04-05T000000-base"]
+
+
+def test_atomic_write_sets_mode_before_the_file_appears(bridge, tmp_path):
+    tmp_path = tmp_path / "written"  # created by the write itself
+    secret = tmp_path / "record.json"
+    bridge._atomic_write(secret, "{}", mode=0o600)
+    assert oct(secret.stat().st_mode & 0o777) == "0o600"
+    public = tmp_path / "result.json"
+    bridge._atomic_write(public, "{}")
+    assert oct(public.stat().st_mode & 0o777) == "0o644"
+    # rewriting keeps the requested mode, and no temporary file is left behind
+    bridge._atomic_write(secret, "{}", mode=0o600)
+    assert oct(secret.stat().st_mode & 0o777) == "0o600"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["record.json", "result.json"]
+
+
+def test_read_json_file_distinguishes_denied_from_missing(bridge, tmp_path, monkeypatch):
+    assert bridge._read_json_file(tmp_path / "missing.json") is None
+    (tmp_path / "list.json").write_text("[]")
+    assert bridge._read_json_file(tmp_path / "list.json") is None
+    (tmp_path / "broken.json").write_text("{")
+    assert bridge._read_json_file(tmp_path / "broken.json") is None
+    (tmp_path / "ok.json").write_text('{"a": 1}')
+    assert bridge._read_json_file(tmp_path / "ok.json") == {"a": 1}
+
+    def denied(self, *_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(bridge.Path, "open", denied)
+    assert bridge._read_json_file(tmp_path / "ok.json") is None
+    with pytest.raises(PermissionError):
+        bridge._read_json_file(tmp_path / "ok.json", raise_permission=True)
 
 
 def test_cli_results_commands(run_bridge, bridge):

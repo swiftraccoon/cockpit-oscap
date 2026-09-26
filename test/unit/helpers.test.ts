@@ -11,6 +11,7 @@ import {
     formatScore,
     matchesSearch,
     parseTimestamp,
+    profileChoices,
     profileShortName,
     resultsToCsv,
     ruleChange,
@@ -111,6 +112,32 @@ describe("small helpers", () => {
         assert.deepEqual([...withMember(base, "b", true)], ["a", "b"]);
         assert.deepEqual([...withMember(base, "a", false)], []);
         assert.deepEqual([...base], ["a"]);  // untouched
+    });
+
+    it("names each scanned profile after its newest scan without customizations", () => {
+        const scan = (id: string, base: string, title: string, tailored: boolean) => ({
+            id,
+            timestamp: id.slice(0, 17),
+            base_profile_id: base,
+            profile_title: title,
+            tailored,
+            profile_id: tailored ? `${base}_customized` : base,
+            datastream: "",
+            duration_seconds: 0,
+            score: 0,
+            counts: emptyCounts(),
+            total: 0,
+            status: "complete" as const,
+            has_arf: true,
+        });
+        const choices = profileChoices([
+            scan("2026-04-03T000000-cis", "cis", "CIS (customized)", true),
+            scan("2026-04-02T000000-cis", "cis", "CIS Benchmark", false),
+            scan("2026-04-01T000000-cis", "cis", "CIS Benchmark (old title)", false),
+            scan("2026-04-01T000000-anssi", "anssi", "", false),
+        ]);
+        assert.deepEqual(choices, [["anssi", "anssi"], ["cis", "CIS Benchmark"]]);
+        assert.deepEqual(profileChoices([]), []);
     });
 
     it("describes durations coarsely", () => {

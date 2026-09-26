@@ -4,7 +4,7 @@
 
 import cockpit from "cockpit";
 
-import type { ResultCounts, RuleResultItem, RuleResultStatus, Severity } from "./types";
+import type { ResultCounts, ResultSummary, RuleResultItem, RuleResultStatus, Severity } from "./types";
 
 const _ = cockpit.gettext;
 
@@ -142,6 +142,25 @@ export function withMember<T>(set: Set<T>, member: T, present: boolean): Set<T> 
 }
 
 /** "45 seconds", "2 minutes", "1 hour 5 minutes": how long something took, coarsely. */
+/**
+ * One [base profile id, title] pair per profile that has been scanned, sorted by title. The title comes
+ * from the newest scan without customizations when there is one, so a tailored name does not stand
+ * for the whole profile.
+ */
+export function profileChoices(summaries: ResultSummary[]): [string, string][] {
+    const best = new Map<string, ResultSummary>();
+    for (const summary of summaries) {
+        const current = best.get(summary.base_profile_id);
+        const better = !current ||
+            (current.tailored && !summary.tailored) ||
+            (current.tailored === summary.tailored && summary.timestamp > current.timestamp);
+        if (better)
+            best.set(summary.base_profile_id, summary);
+    }
+    return Array.from(best.values(), (s): [string, string] => [s.base_profile_id, s.profile_title || s.base_profile_id])
+            .sort((a, b) => a[1].localeCompare(b[1]));
+}
+
 export function formatDuration(seconds: number): string {
     const total = Math.max(0, Math.round(seconds));
     if (total < 60)

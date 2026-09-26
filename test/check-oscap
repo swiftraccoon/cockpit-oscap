@@ -102,23 +102,34 @@ class TestOscap(testlib.MachineCase):
         b.wait_visible(".pf-v6-c-menu__item:contains('Download rule results (CSV)')")
         b.key("Escape")
 
-        # the scan shows up in the history and on the overview
+        # the scan shows up in the history, which the search narrows
         b.click("nav.pf-v6-c-breadcrumb a:contains('Results')")
         b.wait_visible("#results-table tbody:first-of-type > tr")
+        b.wait_in_text(".oscap-toolbar-count", "1 scan")
+        b.set_input_text("#results-search", "no such profile")
+        b.wait_in_text("#results-table", "No scans match the search")
+        b.wait_in_text(".oscap-toolbar-count", "0 scans")
+        b.set_input_text("#results-search", "")
+        b.wait_visible("#results-table tbody:first-of-type > tr")
+
+        # ... and on the overview, where a rule needing attention links to itself on the result page,
+        # expanded (a fresh test VM never passes a whole profile)
         b.click("#oscap-tabs button:contains('Overview')")
         b.wait_visible("#overview-latest")
         b.wait_in_text("#overview-latest", "%")
-        # a rule needing attention links to itself on the result page, expanded
-        if b.is_present("#overview-failed tbody:first-of-type > tr"):
-            b.click("#overview-failed tbody:first-of-type > tr")
-            b.wait_visible("#result-rules")
-            b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
+        b.wait_visible("#overview-failed tbody:first-of-type > tr")
+        b.click("#overview-failed tbody:first-of-type > tr")
+        b.wait_visible("#result-rules")
+        b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
 
     def testProfileEditor(self) -> None:
         b = self.browser
 
         if not self.has_content:
             self.skipTest("no SCAP Security Guide content in this image")
+
+        # saving a customization writes under /var/lib/cockpit-oscap; leave the VM as it was
+        self.restore_dir("/var/lib/cockpit-oscap")
 
         self.login_and_go("/oscap#/profiles")
         b.wait_visible(".oscap-profile-card")
@@ -129,6 +140,28 @@ class TestOscap(testlib.MachineCase):
         b.wait_visible("#tailoring-save[disabled]")
         b.click("#tailoring-tabs button:contains('Values')")
         b.wait_visible("#tailoring-values")
+        b.click("#tailoring-tabs button:contains('Rules')")
+
+        # toggle one rule, review the change, save it
+        b.click("#tailoring-rules tbody:first-of-type label.pf-v6-c-switch")
+        b.wait_visible("#tailoring-review")
+        b.wait_in_text("#tailoring-review", "1 unsaved change")
+        b.click("#tailoring-review")
+        b.wait_visible("#tailoring-review-dialog")
+        b.wait_in_text("#tailoring-review-dialog", "Rule ")
+        b.click("#tailoring-review-dialog button:contains('Close')")
+        b.wait_not_present("#tailoring-review-dialog")
+        b.click("#tailoring-save")
+        b.wait_in_text("#tailoring-editor .pf-v6-c-alert", "saved")
+        b.wait_visible("#tailoring-save[disabled]")
+
+        # the profile card shows the customization, and can drop it again
+        b.click("nav.pf-v6-c-breadcrumb a:contains('Profiles')")
+        b.wait_visible(".oscap-profile-card .pf-v6-c-label:contains('Customized')")
+        b.click(".oscap-profile-card:contains('Customized') button[id^='profile-actions-']")
+        b.click(".pf-v6-c-menu__item:contains('Remove customizations')")
+        b.click(".pf-v6-c-modal-box button:contains('Remove')")
+        b.wait_not_present(".oscap-profile-card .pf-v6-c-label:contains('Customized')")
 
 
 if __name__ == '__main__':
