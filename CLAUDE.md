@@ -12,6 +12,7 @@ src/
   api.ts              # Typed cockpit.spawn wrappers (run/stream helpers → bridge commands)
   types.ts            # Shared TypeScript types (mirror the bridge TypedDicts)
   helpers.ts          # Pure helpers (score thresholds, labels, downloads, search)
+  tailoring.ts        # Profile editor state <-> XCCDF modifications, remarks (unit-tested)
   app-hooks.ts        # useAsync, useScanState (watches scan-state.json), useSuperuser
   app.tsx             # Shell — tabs, scan banner, cockpit.location routing, AppContext
   pages/              # Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
@@ -79,7 +80,9 @@ terminal `scan-state.json` so the UI can show scheduled scans too. `--rescan-of`
 repeats an earlier scan from the tailoring embedded in its ARF. Datastreams are
 detected from `/etc/os-release` (config override first).
 Tailoring writes XCCDF 1.2 files with `<base profile id>_customized` profiles, which
-scans use automatically. A registered tailoring is applied only when oscap could
+scans use automatically. A select/unselect modification may carry a `remark` (the
+justification, written as an XCCDF `<remark>` on the `<select>` and read back from
+other tools' files too). A registered tailoring is applied only when oscap could
 evaluate it (its base profile exists in the content); otherwise `list-profiles`
 reports it with a `tailoring_problem` so the UI can explain and remove it. A
 different SSG product name in the tailoring's benchmark href is only a note (rule

@@ -11,7 +11,9 @@ import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/comp
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
 import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { Form, FormGroup, FormHelperText } from "@patternfly/react-core/dist/esm/components/Form/index.js";
 import { FormSelect, FormSelectOption } from "@patternfly/react-core/dist/esm/components/FormSelect/index.js";
+import { HelperText, HelperTextItem } from "@patternfly/react-core/dist/esm/components/HelperText/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
 import { Modal, ModalBody, ModalFooter, ModalHeader } from "@patternfly/react-core/dist/esm/components/Modal/index.js";
 import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
@@ -39,6 +41,16 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SeverityLabel } from "../components/labels";
 import { RuleDetails } from "../components/RuleDetails";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
+import type { ChangeDescription, EditorState } from "../tailoring";
+import {
+    applyModifications,
+    baseState,
+    computeModifications,
+    describeModifications,
+    statesEqual,
+    withRemark,
+    withRuleSelection,
+} from "../tailoring";
 import {
     SEVERITIES,
     compareSeverity,
@@ -51,101 +63,15 @@ import {
     safeFilename,
     severityLabel,
 } from "../helpers";
-import type { RuleInfo, TailoringInfo, TailoringModification, ValueInfo } from "../types";
+import type { TailoringInfo } from "../types";
 
 const _ = cockpit.gettext;
-
-interface EditorState {
-    selection: Record<string, boolean>;
-    values: Record<string, string>;
-}
 
 type StateFilter = "all" | "selected" | "unselected" | "changed";
 const CUSTOM = "__custom__";
 
-function baseState(rules: RuleInfo[], values: ValueInfo[]): EditorState {
-    const state: EditorState = { selection: {}, values: {} };
-    rules.forEach(rule => { state.selection[rule.id] = rule.selected });
-    values.forEach(value => { state.values[value.id] = value.value });
-    return state;
-}
-
-function applyModifications(base: EditorState, values: ValueInfo[], mods: TailoringModification[]): EditorState {
-    const state: EditorState = { selection: { ...base.selection }, values: { ...base.values } };
-    const valuesById = new Map(values.map(v => [v.id, v]));
-    for (const mod of mods) {
-        if (mod.action === "select" || mod.action === "unselect") {
-            if (mod.idref in state.selection)
-                state.selection[mod.idref] = mod.action === "select";
-        } else if (mod.action === "refine-value") {
-            const option = valuesById.get(mod.idref)?.options.find(o => o.selector === mod.selector);
-            if (option)
-                state.values[mod.idref] = option.value;
-        } else if (mod.action === "set-value" && mod.idref in state.values) {
-            state.values[mod.idref] = mod.value ?? "";
-        }
-    }
-    return state;
-}
-
-function computeModifications(base: EditorState, current: EditorState, values: ValueInfo[]): TailoringModification[] {
-    const mods: TailoringModification[] = [];
-    for (const [id, selected] of Object.entries(current.selection)) {
-        if (base.selection[id] !== selected)
-            mods.push({ idref: id, action: selected ? "select" : "unselect" });
-    }
-    for (const value of values) {
-        const text = current.values[value.id] ?? "";
-        if (text === base.values[value.id])
-            continue;
-        const option = value.options.find(o => o.value === text);
-        mods.push(option
-            ? { idref: value.id, action: "refine-value", selector: option.selector }
-            : { idref: value.id, action: "set-value", value: text });
-    }
-    return mods;
-}
-
-/**
- * A value as the review dialog shows it: by option name when it is one of the content's choices
- * (the chosen selector when known, else the only option with that value), quoted otherwise.
- */
-function describeValue(value: ValueInfo | undefined, text: string, selector?: string): string {
-    const candidates = value?.options.filter(o => o.value === text) ?? [];
-    const option = selector ? candidates.find(o => o.selector === selector) : candidates.length === 1 ? candidates[0] : undefined;
-    if (option)
-        return `${option.selector.replace(/_/g, " ")} (${text || _("empty")})`;
-    return text === "" ? _("(empty)") : JSON.stringify(text);
-}
-
-/** One line per pending customization, for the review dialog. */
-function describeModifications(mods: TailoringModification[], rules: RuleInfo[], values: ValueInfo[],
-    base: EditorState, current: EditorState): { key: string; item: string; change: string }[] {
-    const ruleTitle = new Map(rules.map(r => [r.id, r.title || ruleShortName(r.id)]));
-    const valuesById = new Map(values.map(v => [v.id, v]));
-    return mods.map(mod => {
-        if (mod.action === "select" || mod.action === "unselect") {
-            return {
-                key: mod.idref,
-                item: ruleTitle.get(mod.idref) ?? mod.idref,
-                change: mod.action === "select" ? _("Rule enabled") : _("Rule disabled"),
-            };
-        }
-        const value = valuesById.get(mod.idref);
-        const before = base.values[mod.idref] ?? "";
-        return {
-            key: mod.idref,
-            item: value?.title || mod.idref,
-            change: cockpit.format(_("Value changed from $0 to $1"),
-                                   // the content's own selector names the untouched value
-                                   describeValue(value, before, value && before === value.value ? value.selector : undefined),
-                                   describeValue(value, current.values[mod.idref] ?? "", mod.selector)),
-        };
-    });
-}
-
 const ReviewChangesDialog = ({ changes, dialogResult }: {
-    changes: { key: string; item: string; change: string }[];
+    changes: ChangeDescription[];
     dialogResult: DialogResult<void>;
 }) => (
     <Modal isOpen variant="medium" position="top" onClose={() => dialogResult.resolve()} id="tailoring-review-dialog">
@@ -155,7 +81,20 @@ const ReviewChangesDialog = ({ changes, dialogResult }: {
                 aria-label={_("Pending changes")}
                 variant="compact"
                 columns={[_("Item"), _("Change")]}
-                rows={changes.map(change => ({ props: { key: change.key }, columns: [change.item, change.change] }))}
+                rows={changes.map(change => ({
+                    props: { key: change.key },
+                    columns: [
+                        change.item,
+                        {
+                            title: (
+                                <>
+                                    {change.change}
+                                    {change.remark && <div className="oscap-muted oscap-remark">{change.remark}</div>}
+                                </>
+                            ),
+                        },
+                    ],
+                }))}
             />
         </ModalBody>
         <ModalFooter>
@@ -163,13 +102,6 @@ const ReviewChangesDialog = ({ changes, dialogResult }: {
         </ModalFooter>
     </Modal>
 );
-
-function statesEqual(a: EditorState | null, b: EditorState | null): boolean {
-    if (!a || !b)
-        return a === b;
-    return JSON.stringify(a.selection) === JSON.stringify(b.selection) &&
-        JSON.stringify(a.values) === JSON.stringify(b.values);
-}
 
 export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const app = useApp();
@@ -243,18 +175,12 @@ export const TailoringEditor = ({ profileId }: { profileId: string }) => {
     const unsaved = !statesEqual(current, saved);
     const selectedCount = Object.values(current.selection).filter(Boolean).length;
 
-    function setRule(id: string, selected: boolean) {
-        setCurrent(prev => prev && { ...prev, selection: { ...prev.selection, [id]: selected } });
+    function setRules(ids: string[], selected: boolean) {
+        setCurrent(prev => prev && withRuleSelection(prev, base, ids, selected));
     }
 
-    function setRules(ids: string[], selected: boolean) {
-        setCurrent(prev => {
-            if (!prev)
-                return prev;
-            const selection = { ...prev.selection };
-            ids.forEach(id => { selection[id] = selected });
-            return { ...prev, selection };
-        });
+    function setRemark(id: string, remark: string) {
+        setCurrent(prev => prev && withRemark(prev, id, remark));
     }
 
     function setValue(id: string, text: string) {
@@ -478,6 +404,8 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                     rows={shownRules.map(rule => {
                         const selected = current.selection[rule.id];
                         const changed = base.selection[rule.id] !== selected;
+                        const remark = current.remarks[rule.id] ?? "";
+                        const remarkId = `remark-${safeFilename(ruleShortName(rule.id))}`;
                         return {
                             props: { key: rule.id, ...changed && { className: "oscap-row-changed" } },
                             columns: [
@@ -488,7 +416,7 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                             aria-label={cockpit.format(_("Enable rule $0"), rule.title)}
                                             isChecked={selected}
                                             isDisabled={readOnly}
-                                            onChange={(_ev, checked) => setRule(rule.id, checked)}
+                                            onChange={(_ev, checked) => setRules([rule.id], checked)}
                                         />
                                     ),
                                     props: { className: "oscap-table-nowrap" },
@@ -498,6 +426,7 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                         <>
                                             {rule.title || rule.id}
                                             {changed && <> {" "}<Label color="purple" isCompact>{_("Changed")}</Label></>}
+                                            {remark && <div className="oscap-muted oscap-remark">{remark}</div>}
                                         </>
                                     ),
                                 },
@@ -507,10 +436,38 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                             // details exist only for expanded rows: large profiles have hundreds of rules
                             expandedContent: expandedRules[rule.id]
                                 ? (
-                                    <RuleDetails
-                                        ruleId={rule.id} description={rule.description}
-                                        datastream={app.backend.content.datastream_path}
-                                    />
+                                    <>
+                                        {changed && (
+                                            <Form
+                                                className="oscap-expanded-details oscap-remark-form"
+                                                onSubmit={ev => ev.preventDefault()}
+                                            >
+                                                <FormGroup label={_("Justification")} fieldId={remarkId}>
+                                                    <TextInput
+                                                        id={remarkId}
+                                                        value={remark}
+                                                        isDisabled={readOnly}
+                                                        maxLength={1000}
+                                                        placeholder={selected
+                                                            ? _("Why this rule is enabled here")
+                                                            : _("Why this rule is disabled here")}
+                                                        onChange={(_ev, text) => setRemark(rule.id, text)}
+                                                    />
+                                                    <FormHelperText>
+                                                        <HelperText>
+                                                            <HelperTextItem>
+                                                                {_("Saved with the customization as an XCCDF remark, so auditors and SCAP Workbench see it too.")}
+                                                            </HelperTextItem>
+                                                        </HelperText>
+                                                    </FormHelperText>
+                                                </FormGroup>
+                                            </Form>
+                                        )}
+                                        <RuleDetails
+                                            ruleId={rule.id} description={rule.description}
+                                            datastream={app.backend.content.datastream_path}
+                                        />
+                                    </>
                                 )
                                 : <span />,
                         };

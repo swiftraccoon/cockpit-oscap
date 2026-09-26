@@ -330,6 +330,8 @@ export interface TailoringModification {
     action: TailoringAction;
     value?: string;
     selector?: string;
+    /** Why the rule was enabled or disabled; kept as an XCCDF remark in the tailoring file. */
+    remark?: string;
 }
 
 export interface TailoringInfo {

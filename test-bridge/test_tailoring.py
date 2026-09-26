@@ -48,6 +48,36 @@ def test_build_tailoring_xml_is_valid_xccdf(bridge, datastream):
     assert set_value.text == "12"
 
 
+def test_remarks_travel_with_selects(bridge, datastream, run_bridge):
+    mods = [
+        {"idref": RULE_AUDIT, "action": "unselect", "remark": "  Audit is\n handled by the SIEM agent  "},
+        {"idref": RULE_ROOT_LOGIN, "action": "select"},
+        {"idref": VALUE_TIMEOUT, "action": "set-value", "value": "12", "remark": "not a select: dropped"},
+    ]
+    validated = bridge._validate_modifications(mods)
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base", validated, datastream)
+    root = ET.fromstring(xml)  # noqa: S314
+    remarks = {s.get("idref"): [r.text for r in s.findall(f"{{{NS}}}remark")] for s in root.iter(f"{{{NS}}}select")}
+    assert remarks == {RULE_AUDIT: ["Audit is handled by the SIEM agent"], RULE_ROOT_LOGIN: []}
+    assert root.find(f".//{{{NS}}}set-value/{{{NS}}}remark") is None
+    parsed = bridge.parse_tailoring_xml(xml)["modifications"]
+    assert parsed[0] == {"idref": RULE_AUDIT, "action": "unselect", "remark": "Audit is handled by the SIEM agent"}
+    assert "remark" not in parsed[1]
+    assert "remark" not in parsed[2]
+    # several remarks on one select (other tools) are kept together; validation rejects the unusable
+    xml = xml.replace("</xccdf:remark>", "</xccdf:remark><xccdf:remark>ticket 42</xccdf:remark>")
+    joined = bridge.parse_tailoring_xml(xml)["modifications"][0]["remark"]
+    assert joined == "Audit is handled by the SIEM agent ticket 42"
+    with pytest.raises(bridge.BridgeError, match="string"):
+        bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": 1}])
+    with pytest.raises(bridge.BridgeError, match="at most"):
+        bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": "x" * 1001}])
+    assert bridge._validate_modifications([{"idref": RULE_AUDIT, "action": "unselect", "remark": "  "}]) == [
+        {"idref": RULE_AUDIT, "action": "unselect"}]
+    info = run_bridge("create-tailoring", PROFILE_BASE, json.dumps(mods[:1]))
+    assert info["modifications"][0]["remark"] == "Audit is handled by the SIEM agent"
+
+
 def test_parse_round_trip(bridge, datastream):
     _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
     info = bridge.parse_tailoring_xml(xml)

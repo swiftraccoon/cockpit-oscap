@@ -12,8 +12,9 @@ A complete rewrite of the plugin as an end-to-end compliance workflow.
 - Overview with the latest score, the change since the previous scan, a score
   trend, the rules needing attention grouped by severity, and the schedule state.
 - Profiles page with per-profile last scores, datastream selection and a
-  tailoring editor (rule selection, value editing, review of unsaved changes,
-  import and export of SCAP Workbench tailoring files).
+  tailoring editor (rule selection, value editing, a justification per changed
+  rule stored as an XCCDF remark, review of unsaved changes, import and export
+  of SCAP Workbench tailoring files).
 - Scanning from every page with live progress, a remaining-time estimate and a
   banner for scheduled scans; scan results as ARF plus JSON, pruned to a
   configurable count.

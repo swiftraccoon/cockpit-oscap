@@ -38,9 +38,10 @@ scheduled scans.
 - **Profile customization** – enable or disable rules and adjust values
   (password lengths, timeouts, crypto policies, …) in an editor that groups
   rules by category, shows their description, rationale and references, lets
-  you review the unsaved changes before saving, and saves a standard XCCDF
-  tailoring file. Tailoring files can be imported from and exported to SCAP
-  Workbench.
+  you justify every rule you change (kept as an XCCDF remark, so auditors and
+  SCAP Workbench see it), review the unsaved changes before saving, and saves
+  a standard XCCDF tailoring file. Tailoring files can be imported from and
+  exported to SCAP Workbench.
 - **Scanning** – run a scan from any page and follow live progress with a
   remaining-time estimate; scans started by the scheduler show the same
   progress banner. Results are stored as ARF plus a JSON summary and pruned
@@ -134,6 +135,7 @@ src/
   oscap-bridge.py   Python bridge: one script, dispatched by argv[1], JSON on stdout
   api.ts            typed wrappers around cockpit.spawn() for every bridge command
   types.ts          TypeScript mirrors of the bridge's TypedDicts
+  tailoring.ts      the profile editor's state and its mapping to XCCDF modifications (unit-tested)
   app.tsx           shell: backend detection, tabs, scan banner, cockpit.location routing
   pages/            Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
   components/       ScanDialog, RemediationDialog, RuleDetails, labels, states, ConfirmDialog

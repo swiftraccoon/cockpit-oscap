@@ -180,6 +180,16 @@
   max-inline-size: 18rem;
 }
 
+.oscap-remark {
+  font-size: var(--pf-t--global--font--size--sm);
+  white-space: normal;
+}
+
+.oscap-remark-form {
+  max-inline-size: 40rem;
+  padding-block-end: 0;
+}
+
 .oscap-toolbar-count {
   color: var(--pf-t--global--text--color--subtle);
   white-space: nowrap;

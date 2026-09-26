@@ -143,18 +143,25 @@ class TestOscap(testlib.MachineCase):
         b.wait_visible("#tailoring-values")
         b.click("#tailoring-tabs button:contains('Rules')")
 
-        # toggle one rule, review the change, save it
+        # toggle one rule, justify it, review the change, save it
         b.click("#tailoring-rules tbody:first-of-type label.pf-v6-c-switch")
         b.wait_visible("#tailoring-review")
         b.wait_in_text("#tailoring-review", "1 unsaved change")
+        b.click("#tailoring-rules tbody:first-of-type td.pf-v6-c-table__toggle button")
+        b.set_input_text("#tailoring-rules tbody:first-of-type input[id^='remark-']", "Covered elsewhere, ticket 42")
         b.click("#tailoring-review")
         b.wait_visible("#tailoring-review-dialog")
         b.wait_in_text("#tailoring-review-dialog", "Rule ")
+        b.wait_in_text("#tailoring-review-dialog", "ticket 42")
         b.click("#tailoring-review-dialog button:contains('Close')")
         b.wait_not_present("#tailoring-review-dialog")
         b.click("#tailoring-save")
         b.wait_in_text("#tailoring-editor .pf-v6-c-alert", "saved")
         b.wait_visible("#tailoring-save[disabled]")
+        # the justification is an XCCDF remark in the tailoring file
+        # (execute raises when grep finds nothing)
+        self.machine.execute("grep -q '<xccdf:remark>Covered elsewhere, ticket 42</xccdf:remark>' "
+                             "/var/lib/cockpit-oscap/tailoring/*.xml")
 
         # the profile card shows the customization, and can drop it again
         b.click("nav.pf-v6-c-breadcrumb a:contains('Profiles')")

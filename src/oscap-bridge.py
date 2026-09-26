@@ -136,6 +136,8 @@ TAG_RATIONALE = _x("rationale")
 TAG_WARNING = _x("warning")
 TAG_SELECT = _x("select")
 TAG_SET_VALUE = _x("set-value")
+TAG_REMARK = _x("remark")
+MAX_REMARK_LENGTH = 1000
 TAG_REFINE_VALUE = _x("refine-value")
 TAG_TEST_RESULT = _x("TestResult")
 TAG_TAILORING = _x("Tailoring")
@@ -361,6 +363,7 @@ class TailoringModification(TypedDict, total=False):
     action: str
     value: str
     selector: str
+    remark: str  # why a rule was enabled or disabled (an XCCDF <remark> on the <select>)
 
 
 class TailoringInfo(TypedDict):
@@ -1079,6 +1082,15 @@ def _tailoring_path_for(base_profile_id: str) -> Path:
     return TAILORING_DIR / f"{safe}-tailoring.xml"
 
 
+def _validate_remark(raw: object) -> str:
+    """A rule's justification with its whitespace collapsed, empty when there is none."""
+    if not isinstance(raw, str):
+        raise BridgeError("a remark must be a string")
+    if len(raw) > MAX_REMARK_LENGTH:
+        raise BridgeError(f"a remark may have at most {MAX_REMARK_LENGTH} characters")
+    return " ".join(raw.split())
+
+
 def _validate_modifications(raw: object) -> list[TailoringModification]:
     if not isinstance(raw, list):
         raise BridgeError("modifications must be a JSON array")
@@ -1093,7 +1105,11 @@ def _validate_modifications(raw: object) -> list[TailoringModification]:
         if action not in TAILORING_ACTIONS:
             raise BridgeError(f"invalid modification action: {action!r}")
         mod = TailoringModification(idref=idref, action=action)
-        if action == ACTION_SET_VALUE:
+        if action in (ACTION_SELECT, ACTION_UNSELECT):
+            remark = _validate_remark(item.get("remark", ""))
+            if remark:
+                mod["remark"] = remark
+        elif action == ACTION_SET_VALUE:
             value = item.get("value", "")
             if not isinstance(value, str):
                 raise BridgeError("set-value requires a string value")
@@ -1129,7 +1145,10 @@ def build_tailoring_xml(
         action = mod["action"]
         idref = mod["idref"]
         if action in (ACTION_SELECT, ACTION_UNSELECT):
-            ET.SubElement(profile, TAG_SELECT, {"idref": idref, "selected": str(action == ACTION_SELECT).lower()})
+            selected = str(action == ACTION_SELECT).lower()
+            select = ET.SubElement(profile, TAG_SELECT, {"idref": idref, "selected": selected})
+            if mod.get("remark"):
+                ET.SubElement(select, TAG_REMARK).text = mod["remark"]
         elif action == ACTION_SET_VALUE:
             ET.SubElement(profile, TAG_SET_VALUE, {"idref": idref}).text = mod.get("value", "")
         elif action == ACTION_REFINE_VALUE:
@@ -1154,7 +1173,12 @@ def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
     modifications: list[TailoringModification] = []
     for sel in profile.findall(TAG_SELECT):
         action = ACTION_SELECT if sel.get("selected", "true") == "true" else ACTION_UNSELECT
-        modifications.append(TailoringModification(idref=sel.get("idref", ""), action=action))
+        mod = TailoringModification(idref=sel.get("idref", ""), action=action)
+        # SCAP Workbench and other tools may attach several remarks; keep them together
+        remark = " ".join(filter(None, (_text(r) for r in sel.findall(TAG_REMARK))))
+        if remark:
+            mod["remark"] = remark[:MAX_REMARK_LENGTH]
+        modifications.append(mod)
     for rv in profile.findall(TAG_REFINE_VALUE):
         modifications.append(TailoringModification(
             idref=rv.get("idref", ""), action=ACTION_REFINE_VALUE, selector=rv.get("selector", "")))
