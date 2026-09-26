@@ -77,14 +77,17 @@ export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
     const fixable = useMemo(() => (fix.data?.rules ?? []).filter(r => r.has_fix), [fix.data]);
     const unfixable = useMemo(() => (fix.data?.rules ?? []).filter(r => !r.has_fix), [fix.data]);
 
-    // Pre-select the requested rules, or everything except high-risk fixes, once the fixes are known
+    // Pre-select the requested rules (the user chose them explicitly, whatever their risk), or
+    // everything except high-risk fixes, once the fixes are known
+    const requested = useMemo(() => fixable.filter(r => initialSelection?.includes(r.id)), [fixable, initialSelection]);
+    const requestedMissing = Boolean(initialSelection?.length) && fix.data !== null && requested.length === 0;
     const selection = useMemo(() => {
         if (selected)
             return selected;
-        if (initialSelection)
-            return new Set(fixable.filter(r => initialSelection.includes(r.id)).map(r => r.id));
+        if (initialSelection && !requestedMissing)
+            return new Set(requested.map(r => r.id));
         return new Set(fixable.filter(r => r.risk_level !== "high").map(r => r.id));
-    }, [selected, fixable, initialSelection]);
+    }, [selected, fixable, initialSelection, requested, requestedMissing]);
 
     const selectedRules = fixable.filter(r => selection.has(r.id));
 
@@ -154,9 +157,18 @@ export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
                 <Stack hasGutter>
                     <StackItem>
                         <Alert variant="warning" isInline component="h2" title={_("Remediation changes this system's configuration")}>
-                            {_("Review each fix before applying it. Fixes that touch authentication, SSH, the firewall, SELinux, mounts or the boot loader are marked high risk and are not selected by default. Changes are not undone automatically.")}
+                            {requested.length > 0
+                                ? _("Review the fix before applying it: fixes that touch authentication, SSH, the firewall, SELinux, mounts or the boot loader are marked high risk. Changes are not undone automatically.")
+                                : _("Review each fix before applying it. Fixes that touch authentication, SSH, the firewall, SELinux, mounts or the boot loader are marked high risk and are not selected by default. Changes are not undone automatically.")}
                         </Alert>
                     </StackItem>
+                    {requestedMissing && (
+                        <StackItem>
+                            <Alert variant="info" isInline component="h2" title={_("No fix was generated for the chosen rule")}>
+                                {_("OpenSCAP did not produce a Bash fix for it from this scan. The other failed rules with a fix are listed below.")}
+                            </Alert>
+                        </StackItem>
+                    )}
                     {fixable.length > 0 && (
                         <StackItem>
                             <Split hasGutter>

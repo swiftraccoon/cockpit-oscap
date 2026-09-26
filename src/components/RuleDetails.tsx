@@ -29,12 +29,13 @@ const _ = cockpit.gettext;
 
 const cache = new Map<string, Promise<RuleDetail>>();
 
-function loadRule(ruleId: string): Promise<RuleDetail> {
-    let pending = cache.get(ruleId);
+function loadRule(ruleId: string, datastream: string | undefined): Promise<RuleDetail> {
+    const key = `${datastream ?? ""}\n${ruleId}`;
+    let pending = cache.get(key);
     if (!pending) {
-        pending = ruleInfo(ruleId);
-        cache.set(ruleId, pending);
-        pending.catch(() => cache.delete(ruleId));
+        pending = ruleInfo(ruleId, datastream);
+        cache.set(key, pending);
+        pending.catch(() => cache.delete(key));
     }
     return pending;
 }
@@ -96,8 +97,10 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, message, description, active = true, onRemediate }: {
+export const RuleDetails = ({ ruleId, datastream, message, description, active = true, onRemediate }: {
     ruleId: string;
+    /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
+    datastream?: string | undefined;
     /** A message recorded by the scanner for this rule (typically for errors). */
     message?: string;
     /** Already-known description, shown while the full details load. */
@@ -108,7 +111,8 @@ export const RuleDetails = ({ ruleId, message, description, active = true, onRem
     onRemediate?: () => void;
 }) => {
     const { data, error, loading } = useAsync(
-        () => (active ? loadRule(ruleId) : Promise.resolve<RuleDetail | null>(null)), [ruleId, active]);
+        () => (active ? loadRule(ruleId, datastream) : Promise.resolve<RuleDetail | null>(null)),
+        [ruleId, datastream, active]);
 
     return (
         <div className="oscap-expanded-details">
@@ -166,7 +170,7 @@ export const RuleDetails = ({ ruleId, message, description, active = true, onRem
                                 {data.fix_systems.length > 0 ? fixSystemNames(data.fix_systems) : _("No automated remediation available")}
                                 {data.has_fix && onRemediate && (
                                     <Button
-variant="secondary" size="sm" className="oscap-rule-remediate"
+id={`remediate-${ruleId}`} variant="secondary" size="sm"
                                             onClick={onRemediate}
                                     >
                                         {_("Remediate this rule")}

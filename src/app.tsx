@@ -14,9 +14,11 @@ import PlayIcon from "@patternfly/react-icons/dist/esm/icons/play-icon";
 import cockpit from "cockpit";
 
 import { WithDialogs, useDialogs } from "dialogs";
+import { page_status } from "notifications";
+import type { Status } from "notifications";
 import { usePageLocation } from "hooks";
 
-import { detectBackend } from "./api";
+import { detectBackend, listResults } from "./api";
 import { useAsync, useScanState, useSuperuser } from "./app-hooks";
 import { ScanBanner } from "./components/ScanBanner";
 import { ScanDialog } from "./components/ScanDialog";
@@ -27,11 +29,30 @@ import { ResultDetailPage } from "./pages/ResultDetailPage";
 import { ResultsPage } from "./pages/ResultsPage";
 import { SchedulePage } from "./pages/SchedulePage";
 import { TailoringEditor } from "./pages/TailoringEditor";
-import type { BackendInfo } from "./types";
+import { formatScore, scoreVariant } from "./helpers";
+import type { BackendInfo, ResultSummary, ScanState } from "./types";
 
 const _ = cockpit.gettext;
 
 const RELOAD_COALESCE_MS = 150;
+
+/** What Cockpit's navigation should flag next to "Compliance", or null when all is well. */
+function complianceStatus(results: ResultSummary[], scanState: ScanState | null): Status | null {
+    if (scanState && !scanState.running && scanState.status === "failed")
+        return { type: "warning", title: _("The last compliance scan failed") };
+    const latest = results.find(r => r.status === "complete");
+    if (latest && scoreVariant(latest.score) === "danger")
+        return { type: "warning", title: cockpit.format(_("Compliance score $0"), formatScore(latest.score)) };
+    return null;
+}
+
+/** The page frame: Cockpit's shell has no heading of its own, so every state of the page gets one. */
+const Shell = ({ children }: { children: React.ReactNode }) => (
+    <Page className="no-masthead-sidebar" isContentFilled>
+        <h1 className="pf-v6-screen-reader">{_("Compliance")}</h1>
+        {children}
+    </Page>
+);
 
 export interface AppContextValue {
     backend: BackendInfo;
@@ -121,6 +142,18 @@ const AppShell = () => {
     }, [Dialogs, bump]);
 
     const info = backend.data;
+
+    // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
+    // so the icon appears without visiting it)
+    useEffect(() => {
+        if (!info || !info.oscap || !info.content.present || scanning)
+            return undefined;
+        let cancelled = false;
+        listResults()
+                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanState)); })
+                .catch(() => { if (!cancelled) page_status.set_own(null); });
+        return () => { cancelled = true };
+    }, [info, version, scanning, scanState]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,
@@ -135,21 +168,21 @@ const AppShell = () => {
 
     if (!context || !info) {
         return (
-            <Page className="no-masthead-sidebar" isContentFilled>
+            <Shell>
                 <PageSection hasBodyWrapper={false} isFilled>
                     {backend.loading
                         ? <Loading />
                         : <ErrorState title={_("Failed to detect OpenSCAP")} error={backend.error} onRetry={() => backend.reload()} />}
                 </PageSection>
-            </Page>
+            </Shell>
         );
     }
 
     if (!info.oscap || !info.content.present) {
         return (
-            <Page className="no-masthead-sidebar" isContentFilled>
+            <Shell>
                 <SetupNeeded backend={info} onRetry={() => backend.reload()} />
-            </Page>
+            </Shell>
         );
     }
 
@@ -175,8 +208,7 @@ hasBodyWrapper={false} isFilled id={`page-${page}`}
 
     return (
         <AppContext.Provider value={context}>
-            <Page className="no-masthead-sidebar" isContentFilled>
-                <h1 className="pf-v6-screen-reader">{_("Compliance")}</h1>
+            <Shell>
                 {!detail && (
                     <PageSection type="tabs" hasBodyWrapper={false}>
                         <div className="oscap-tabs-row">
@@ -212,7 +244,7 @@ key={name} eventKey={name} id={`tab-${name}`} tabContentId={`page-${name}`}
                 )}
                 <ScanBanner />
                 {content}
-            </Page>
+            </Shell>
         </AppContext.Provider>
     );
 };

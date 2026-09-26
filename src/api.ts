@@ -45,6 +45,7 @@ export const DATA_DIR = "/var/lib/cockpit-oscap";
 export const RESULTS_DIR = `${DATA_DIR}/results`;
 export const SCAN_STATE_PATH = `${DATA_DIR}/scan-state.json`;
 export const TIMER_UNIT = "cockpit-oscap-scan.timer";
+export const SERVICE_UNIT = "cockpit-oscap-scan.service";
 
 /** An error reported by the bridge (or by the process running it). */
 export class BridgeError extends Error {

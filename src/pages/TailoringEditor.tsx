@@ -445,6 +445,7 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                             expandedContent: (
                                 <RuleDetails
                                     ruleId={rule.id} description={rule.description}
+                                    datastream={app.backend.content.datastream_path}
                                     active={Boolean(expandedRules[rule.id])}
                                 />
                             ),

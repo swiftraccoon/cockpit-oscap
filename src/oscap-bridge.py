@@ -311,6 +311,7 @@ class ResultSummary(TypedDict):
     timestamp: str
     profile_id: str
     base_profile_id: str
+    datastream: str
     profile_title: str
     score: float
     counts: dict[str, int]
@@ -891,6 +892,11 @@ class _BenchmarkIndex:
         }
 
 
+def _has_bash_fix(rule: ET.Element) -> bool:
+    """Whether the rule ships the fix this plugin can apply (``oscap generate fix --fix-type bash``)."""
+    return any(fix.get("system") == FIX_SYSTEM_BASH for fix in rule.findall(_x("fix")))
+
+
 def _rule_info(index: _BenchmarkIndex, rule_id: str, *, selected: bool) -> RuleInfo:
     rule = index.rules[rule_id]
     return RuleInfo(
@@ -901,7 +907,7 @@ def _rule_info(index: _BenchmarkIndex, rule_id: str, *, selected: bool) -> RuleI
         selected=selected,
         group=index.category(rule_id),
         group_path=index.group_path.get(rule_id, []),
-        has_fix=rule.find(_x("fix")) is not None,
+        has_fix=_has_bash_fix(rule),
     )
 
 
@@ -995,7 +1001,7 @@ def rule_detail(ds_path: str, rule_id: str) -> RuleDetail:
         references=[Reference(href=r.get("href", ""), text=_text(r)) for r in rule.findall(_x("reference"))],
         idents=[Ident(system=i.get("system", ""), text=_text(i)) for i in rule.findall(_x("ident"))],
         group_path=index.group_path.get(rule_id, []),
-        has_fix=any(f.get("system") == FIX_SYSTEM_BASH for f in fixes),
+        has_fix=_has_bash_fix(rule),
         fix_systems=sorted({f.get("system", "") for f in fixes}),
     )
 
@@ -1381,6 +1387,7 @@ def _summarize(result: ScanResult) -> ResultSummary:
         timestamp=result["timestamp"],
         profile_id=result["profile_id"],
         base_profile_id=result["base_profile_id"],
+        datastream=result["datastream"],
         profile_title=result["profile_title"],
         score=result["score"],
         counts=result["counts"],

@@ -76,7 +76,7 @@ def test_profile_rules_selection_groups_and_values(bridge, datastream):
     assert rules[RULE_AUDIT]["group"] == "Auditing"
     assert rules[RULE_AUDIT]["group_path"] == ["System Settings", "Auditing"]
     assert rules[RULE_AUDIT]["has_fix"] is True
-    assert rules[RULE_ROOT_LOGIN]["has_fix"] is False
+    assert rules[RULE_ROOT_LOGIN]["has_fix"] is False  # only an Ansible fix: nothing the plugin can apply
     assert rules[RULE_AUDIT]["description"] == "Install the audit package."
     assert rules[RULE_AUDIT]["severity"] == "medium"
 
@@ -171,3 +171,13 @@ def test_list_profiles_reports_unusable_tailoring(bridge, datastream):
     by_id = {p["id"]: p for p in bridge.list_profiles(datastream, {"tailorings": {PROFILE_BASE: str(path)}})}
     assert by_id[PROFILE_BASE]["tailored_profile_id"] == profile_id
     assert by_id[PROFILE_BASE]["tailoring_problem"] == ""
+
+
+def test_rule_detail_fix_systems(bridge, datastream):
+    audit = bridge.rule_detail(datastream, RULE_AUDIT)
+    assert audit["has_fix"] is True
+    assert audit["fix_systems"] == ["urn:xccdf:fix:script:sh"]
+    root_login = bridge.rule_detail(datastream, RULE_ROOT_LOGIN)
+    assert root_login["has_fix"] is False
+    assert root_login["fix_systems"] == ["urn:xccdf:fix:script:ansible"]
+    assert bridge.rule_detail(datastream, RULE_TIMEOUT)["fix_systems"] == []

@@ -29,7 +29,7 @@ import { FormHelper } from "cockpit-components-form-helper";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import * as timeformat from "timeformat";
 
-import { TIMER_UNIT, getConfig, listProfiles, manageTimer, setConfig, validateCalendar } from "../api";
+import { SERVICE_UNIT, TIMER_UNIT, getConfig, listProfiles, manageTimer, setConfig, validateCalendar } from "../api";
 import { useApp } from "../app";
 import { useAsync, useDebounced } from "../app-hooks";
 import { TailoredLabel, When } from "../components/labels";
@@ -116,10 +116,21 @@ function lastOutcome(timer: TimerStatus): React.ReactNode {
         return <Label status="info" isCompact>{_("Running now")}</Label>;
     if (!timer.last_scan_finished)
         return <span className="oscap-muted">{_("No scheduled scan has run yet")}</span>;
-    const label = timer.service_result === "success"
-        ? <Label status="success" isCompact>{_("Succeeded")}</Label>
-        : <Label status="danger" isCompact>{cockpit.format(_("Failed ($0)"), timer.service_result)}</Label>;
-    return <>{label} <When iso={timer.last_scan_finished} fallback="" /></>;
+    if (timer.service_result === "success")
+        return <><Label status="success" isCompact>{_("Succeeded")}</Label> <When iso={timer.last_scan_finished} fallback="" /></>;
+    return (
+        <>
+            <Label status="danger" isCompact>{cockpit.format(_("Failed ($0)"), timer.service_result)}</Label>
+            {" "}<When iso={timer.last_scan_finished} fallback="" />
+            {" · "}
+            <Button
+                variant="link" isInline
+                onClick={() => cockpit.jump(`/system/logs#/?prio=*&_SYSTEMD_UNIT=${SERVICE_UNIT}`)}
+            >
+                {_("View log")}
+            </Button>
+        </>
+    );
 }
 
 export const SchedulePage = () => {

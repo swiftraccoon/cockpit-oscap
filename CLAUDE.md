@@ -15,7 +15,8 @@ src/
   app-hooks.ts        # useAsync, useScanState (watches scan-state.json), useSuperuser
   app.tsx             # Shell — tabs, scan banner, cockpit.location routing, AppContext
   pages/              # Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
-  components/         # ScanDialog, RemediationDialog, RuleDetails, labels, states, ConfirmDialog
+  components/         # ScanDialog, RemediationDialog, RuleDetails, ScoreTrend, ScanEta, ActionsMenu,
+                      # TruncatedText, labels, states, ConfirmDialog
   app.scss            # Page styles (PatternFly 6 tokens only; light and dark themes)
   manifest.json       # Cockpit manifest — menu entry, keywords, docs, install hints
 test-bridge/          # pytest unit tests (synthetic datastream + ARF fixtures, mocked systemctl)
@@ -68,12 +69,20 @@ Commands (argv[1]): `detect-backend`, `get-config`, `set-config`, `list-profiles
 Every command prints one JSON document; errors are `{"error": "..."}` with exit
 status 1 (raised as `BridgeError` internally). `scan` and `remediate` stream
 `{"type": "progress", ...}` lines and finish with `{"type": "done", "result": ...}`.
-`scan` runs `oscap xccdf eval --progress`, holds a lock (`scan.lock`), forwards
-SIGTERM to oscap, and keeps `scan-state.json` updated so the UI can show scheduled
-scans too. Datastreams are detected from `/etc/os-release` (config override first).
+`scan [profile] [--no-tailoring | --tailoring-path f | --rescan-of <result id>]`
+runs `oscap xccdf eval --progress`, holds a lock (`scan.lock`), forwards SIGTERM to
+oscap, keeps writing to stdout only while Cockpit listens, and always leaves a
+terminal `scan-state.json` so the UI can show scheduled scans too. `--rescan-of`
+repeats an earlier scan from the tailoring embedded in its ARF. Datastreams are
+detected from `/etc/os-release` (config override first).
 Tailoring writes XCCDF 1.2 files with `<base profile id>_customized` profiles, which
-scans use automatically. Remediation generates fixes from the ARF result
-(`--result-id`) and runs the selected rule blocks one at a time.
+scans use automatically. A registered tailoring is applied only when oscap could
+evaluate it (its base profile exists in the content); otherwise `list-profiles`
+reports it with a `tailoring_problem` so the UI can explain and remove it. A
+different SSG product name in the tailoring's benchmark href is only a note (rule
+ids are shared across products). Remediation generates fixes from the ARF result
+(`--result-id`, `--type bash|ansible`) and runs the selected Bash rule blocks one at
+a time; `has_fix` on rules means precisely that a Bash fix exists.
 
 Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailoring/`,
 `remediation/`, `scan-state.json`).
@@ -86,7 +95,12 @@ React + PatternFly 6, reusing cockpit's shared components from `pkg/lib`
 `profiles/<id>` (tailoring editor), `results`, `results/<id>`, `schedule`. Scanning is a
 dialog available from every tab (the old `scan` route redirects to `overview`).
 `AppContext` (`useApp()`) exposes backend info, a `version` counter pages reload on,
-`superuser` state and `runScan()`.
+`superuser` state and `runScan()`. The shell also publishes a Cockpit page status
+(`notifications.page_status`) when the last scan failed or the latest score is poor;
+the manifest preloads the page so the navigation icon appears without visiting it.
+`RuleDetails` fetches a rule only while its row is expanded and caches per
+datastream. Kebab menus use `ActionsMenu` (a named toggle) rather than cockpit's
+`KebabDropdown`; inline alerts set `component="h2"` so heading order stays valid.
 
 ### Systemd Timer
 

@@ -40,19 +40,16 @@ export const ProfilesPage = () => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const [profiles, config, results] = await Promise.all([
-            listProfiles(),
-            getConfig(),
-            listResults().catch((): ResultSummary[] => []),
-        ]);
-        // newest first, so the first summary per base profile is its latest scan
+        const [profiles, config, results] = await Promise.all([listProfiles(), getConfig(), listResults()]);
+        // newest first, so the first summary per base profile (scanned with this content) is its latest scan
+        const datastream = app.backend.content.datastream_path;
         const latest = new Map<string, ResultSummary>();
         for (const summary of results) {
-            if (summary.status === "complete" && !latest.has(summary.base_profile_id))
+            if (summary.status === "complete" && summary.datastream === datastream && !latest.has(summary.base_profile_id))
                 latest.set(summary.base_profile_id, summary);
         }
         return { profiles, config, latest };
-    }, [app.version]);
+    }, [app.version, app.backend.content.datastream_path]);
     const [search, setSearch] = useState("");
     const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -246,6 +243,7 @@ key={profile.id} id={`profile-${safeFilename(short)}`}
                                                             ? (
                                                                 <>
                                                                     <ScoreLabel score={last.score} />
+                                                                    {last.tailored && <TailoredLabel />}
                                                                     <Button
 variant="link" isInline className="oscap-small"
                                                                             onClick={() => cockpit.location.go(["results", last.id])}
