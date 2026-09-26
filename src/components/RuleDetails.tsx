@@ -7,6 +7,7 @@
 
 import React, { useState } from "react";
 import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { ClipboardCopy } from "@patternfly/react-core/dist/esm/components/ClipboardCopy/index.js";
 import {
     DescriptionList,
@@ -38,6 +39,7 @@ function loadRule(ruleId: string): Promise<RuleDetail> {
     return pending;
 }
 
+/** Known fix systems, in the order they are listed (the ones this plugin can apply or export first). */
 const FIX_SYSTEM_NAMES: Record<string, string> = {
     "urn:xccdf:fix:script:sh": "Bash",
     "urn:xccdf:fix:script:ansible": "Ansible",
@@ -45,8 +47,18 @@ const FIX_SYSTEM_NAMES: Record<string, string> = {
     "urn:xccdf:fix:script:kubernetes": "Kubernetes",
     "urn:redhat:anaconda:pre": "Anaconda",
     "urn:xccdf:fix:script:ignition": "Ignition",
+    "urn:redhat:osbuild:blueprint": "Image builder blueprint",
     "urn:xccdf:fix:script:blueprint": "Image builder blueprint",
 };
+const FIX_SYSTEM_ORDER = Object.keys(FIX_SYSTEM_NAMES);
+
+function fixSystemNames(systems: string[]): string {
+    const rank = (system: string) => {
+        const index = FIX_SYSTEM_ORDER.indexOf(system);
+        return index === -1 ? FIX_SYSTEM_ORDER.length : index;
+    };
+    return Array.from(new Set([...systems].sort((a, b) => rank(a) - rank(b)).map(s => FIX_SYSTEM_NAMES[s] ?? s))).join(", ");
+}
 
 function groupReferences(references: Reference[]): [string, string[]][] {
     const groups = new Map<string, string[]>();
@@ -84,7 +96,7 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, message, description, active = true }: {
+export const RuleDetails = ({ ruleId, message, description, active = true, onRemediate }: {
     ruleId: string;
     /** A message recorded by the scanner for this rule (typically for errors). */
     message?: string;
@@ -92,15 +104,17 @@ export const RuleDetails = ({ ruleId, message, description, active = true }: {
     description?: string;
     /** Whether the details are visible; nothing is fetched until they are. */
     active?: boolean;
+    /** Offered next to the remediation info when the rule ships an automated fix. */
+    onRemediate?: () => void;
 }) => {
     const { data, error, loading } = useAsync(
         () => (active ? loadRule(ruleId) : Promise.resolve<RuleDetail | null>(null)), [ruleId, active]);
 
     return (
         <div className="oscap-expanded-details">
-            {message && <Alert variant="warning" isInline isPlain title={_("Scanner message")}>{message}</Alert>}
+            {message && <Alert component="h2" variant="warning" isInline isPlain title={_("Scanner message")}>{message}</Alert>}
             {error && (
-                <Alert variant="danger" isInline isPlain title={_("Rule details are unavailable")}>{error}</Alert>
+                <Alert component="h2" variant="danger" isInline isPlain title={_("Rule details are unavailable")}>{error}</Alert>
             )}
             <DescriptionList isCompact isHorizontal horizontalTermWidthModifier={{ default: "14ch" }}>
                 <DescriptionListGroup>
@@ -148,9 +162,17 @@ export const RuleDetails = ({ ruleId, message, description, active = true }: {
                     <DescriptionListGroup>
                         <DescriptionListTerm>{_("Remediation")}</DescriptionListTerm>
                         <DescriptionListDescription>
-                            {data.fix_systems.length > 0
-                                ? data.fix_systems.map(system => FIX_SYSTEM_NAMES[system] ?? system).join(", ")
-                                : _("No automated remediation available")}
+                            <span className="oscap-inline-list">
+                                {data.fix_systems.length > 0 ? fixSystemNames(data.fix_systems) : _("No automated remediation available")}
+                                {data.has_fix && onRemediate && (
+                                    <Button
+variant="secondary" size="sm" className="oscap-rule-remediate"
+                                            onClick={onRemediate}
+                                    >
+                                        {_("Remediate this rule")}
+                                    </Button>
+                                )}
+                            </span>
                         </DescriptionListDescription>
                     </DescriptionListGroup>
                 )}

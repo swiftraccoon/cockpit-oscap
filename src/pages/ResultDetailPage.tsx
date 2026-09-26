@@ -5,7 +5,7 @@
  * the entry point to guided remediation.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
@@ -20,7 +20,6 @@ import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/
 import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import { KebabDropdown } from "cockpit-components-dropdown";
 import { ListingTable } from "cockpit-components-table";
 import type { ListingTableRowProps, RowRecord } from "cockpit-components-table";
 import { SimpleSelect } from "cockpit-components-simple-select";
@@ -30,6 +29,7 @@ import * as timeformat from "timeformat";
 import { deleteResult, getResult, listResults } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { ActionsMenu } from "../components/ActionsMenu";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { RemediationDialog } from "../components/RemediationDialog";
 import { RuleDetails } from "../components/RuleDetails";
@@ -83,14 +83,8 @@ function matchesStatus(filter: StatusFilter, result: string): boolean {
 }
 
 /** The most recent completed scan of the same profile that ran before `result`, if any. */
-async function findPrevious(result: ScanResult): Promise<ScanResult | null> {
+async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Promise<ScanResult | null> {
     const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
-    let summaries: ResultSummary[];
-    try {
-        summaries = await listResults();
-    } catch {
-        return null;
-    }
     // newest first, so the first older match is the immediately preceding scan
     const before = summaries.find(s => s.id !== result.id && s.profile_id === result.profile_id &&
         s.status === "complete" && (parseTimestamp(s.timestamp)?.getTime() ?? 0) < at);
@@ -107,8 +101,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const result = await getResult(resultId);
-        return { result, previous: await findPrevious(result) };
+        const [result, summaries] = await Promise.all([
+            getResult(resultId),
+            listResults().catch((): ResultSummary[] => []),
+        ]);
+        return { result, previous: await findPrevious(result, summaries) };
     }, [resultId, app.version]);
     const [search, setSearch] = useState("");
     const [status, setStatus] = useState<StatusFilter>("all");
@@ -126,6 +123,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     }, [result]);
     const previousResults = useMemo(
         () => new Map((previous?.results ?? []).map(r => [r.rule_id, r.result])), [previous]);
+    // the comparison filter only makes sense while there is something to compare with
+    useEffect(() => {
+        if (!previous && status === "changed")
+            setStatus("all");
+    }, [previous, status]);
 
     if (data.loading && !result)
         return <PageSection hasBodyWrapper={false} isFilled><Loading /></PageSection>;
@@ -179,10 +181,16 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         }
     }
 
-    function remediateRules() {
+    function remediateRules(ruleIds?: string[]) {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<RemediationDialog result={loaded} onRescanned={() => app.bump()} />);
+        Dialogs.show(
+            <RemediationDialog
+                result={loaded}
+                {...ruleIds && { initialSelection: ruleIds }}
+                onRescanned={() => app.bump()}
+            />
+        );
     }
 
     const shown = result.results.filter(rule =>
@@ -309,15 +317,16 @@ flex={{ default: "flex_1" }} justifyContent={{ default: "justifyContentFlexEnd" 
                                 >
                                     <FlexItem>
                                         <Button
-id="result-remediate" variant="primary" onClick={remediateRules}
+id="result-remediate" variant="primary" onClick={() => remediateRules()}
                                                 isDisabled={!canRemediate}
                                         >
                                             {_("Remediate failed rules")}
                                         </Button>
                                     </FlexItem>
                                     <FlexItem>
-                                        <KebabDropdown
+                                        <ActionsMenu
                                             toggleButtonId="result-actions"
+                                            ariaLabel={_("Scan actions")}
                                             dropdownItems={[
                                                 <DropdownItem
 key="rescan" isDisabled={readOnly || app.scanning}
@@ -468,6 +477,8 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                         <RuleDetails
                                             ruleId={rule.rule_id} message={rule.message}
                                             active={Boolean(expandedRules[rule.rule_id])}
+                                            {...canRemediate && normalizeResult(rule.result) === "fail" &&
+                                                { onRemediate: () => remediateRules([rule.rule_id]) }}
                                         />
                                     ),
                                 };

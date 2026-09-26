@@ -31,7 +31,16 @@ import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ScoreTrend } from "../components/ScoreTrend";
 import type { TrendPoint } from "../components/ScoreTrend";
-import { CountLabels, ScanStatusLabel, ScoreLabel, ScoreValue, SeverityLabel, TailoredLabel, When } from "../components/labels";
+import {
+    CountLabels,
+    ScanStatusLabel,
+    ScoreLabel,
+    ScoreValue,
+    SeverityCounts,
+    SeverityLabel,
+    TailoredLabel,
+    When,
+} from "../components/labels";
 import { ErrorState, Loading } from "../components/states";
 import { compareSeverity, parseTimestamp, scoredTotal } from "../helpers";
 import type { RuleResultItem, TimerStatus } from "../types";
@@ -184,7 +193,7 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
                                             <StackItem>
                                                 <div className="oscap-inline-list">
                                                     <strong>{activeProfile.title}</strong>
-                                                    {activeProfile.tailoring_path && <TailoredLabel />}
+                                                    {activeProfile.tailored_profile_id && <TailoredLabel />}
                                                 </div>
                                             </StackItem>
                                             <StackItem>
@@ -277,20 +286,25 @@ variant="link" isInline
                                         />
                                     )
                                     : (
-                                        <ListingTable
-                                            aria-label={_("Failed rules")}
-                                            variant="compact"
-                                            columns={[_("Severity"), _("Rule"), _("Category")]}
-                                            onRowClick={() => cockpit.location.go(["results", latest.id])}
-                                            rows={failed.slice(0, TOP_FAILED).map(rule => ({
-                                                props: { key: rule.rule_id },
-                                                columns: [
-                                                    <SeverityLabel key="severity" severity={rule.severity} />,
-                                                    rule.title || rule.rule_id,
-                                                    rule.group || _("Uncategorized"),
-                                                ],
-                                            }))}
-                                        />
+                                        <Stack hasGutter>
+                                            <StackItem id="overview-severities"><SeverityCounts rules={failed} /></StackItem>
+                                            <StackItem>
+                                                <ListingTable
+                                                    aria-label={_("Failed rules")}
+                                                    variant="compact"
+                                                    columns={[_("Severity"), _("Rule"), _("Category")]}
+                                                    onRowClick={() => cockpit.location.go(["results", latest.id])}
+                                                    rows={failed.slice(0, TOP_FAILED).map(rule => ({
+                                                        props: { key: rule.rule_id },
+                                                        columns: [
+                                                            <SeverityLabel key="severity" severity={rule.severity} />,
+                                                            rule.title || rule.rule_id,
+                                                            rule.group || _("Uncategorized"),
+                                                        ],
+                                                    }))}
+                                                />
+                                            </StackItem>
+                                        </Stack>
                                     )}
                             </CardBody>
                             {failed.length > 0 && (

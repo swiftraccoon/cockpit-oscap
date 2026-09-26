@@ -124,7 +124,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
                             />
                             <FormHelper helperText={profile?.description} />
                         </FormGroup>
-                        {profile?.tailoring_path && (
+                        {profile?.tailored_profile_id && (
                             <FormGroup fieldId="scan-tailoring">
                                 <Checkbox
                                     id="scan-tailoring"
@@ -176,7 +176,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
         body = (
             <Stack hasGutter>
                 <StackItem>
-                    <Alert variant="success" isInline title={_("Scan complete")}>
+                    <Alert component="h2" variant="success" isInline title={_("Scan complete")}>
                         {result.profile_title}
                     </Alert>
                 </StackItem>
@@ -196,7 +196,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
         );
     } else {
         body = cancelled
-            ? <Alert variant="info" isInline title={_("The scan was cancelled")} />
+            ? <Alert component="h2" variant="info" isInline title={_("The scan was cancelled")} />
             : <ErrorAlert title={_("Scan failed")} error={error} />;
         footer = (
             <>

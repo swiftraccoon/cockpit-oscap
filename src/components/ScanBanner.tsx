@@ -34,7 +34,7 @@ export const ScanBanner = () => {
 
     return (
         <PageSection hasBodyWrapper={false} className="oscap-banner-section">
-            <Alert id="scan-banner" variant="info" isInline title={title} customIcon={<Spinner size="md" />}>
+            <Alert component="h2" id="scan-banner" variant="info" isInline title={title} customIcon={<Spinner size="md" />}>
                 <Progress
                     value={state.progress ?? 0}
                     size="sm"

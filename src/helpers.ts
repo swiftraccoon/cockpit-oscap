@@ -115,10 +115,10 @@ export function ruleChange(before: string | undefined, after: string): RuleChang
     const now = normalizeResult(after);
     if (was === now)
         return null;
+    if (FAILING.includes(now) && !FAILING.includes(was))
+        return "regressed";
     if (FAILING.includes(was) && PASSING.includes(now))
         return "fixed";
-    if (PASSING.includes(was) && FAILING.includes(now))
-        return "regressed";
     return "changed";
 }
 

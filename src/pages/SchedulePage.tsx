@@ -241,7 +241,7 @@ export const SchedulePage = () => {
         <Stack hasGutter>
             {!timer.installed && (
                 <StackItem>
-                    <Alert variant="warning" isInline title={_("The scheduled scan timer is not installed")}>
+                    <Alert component="h2" variant="warning" isInline title={_("The scheduled scan timer is not installed")}>
                         {cockpit.format(_("The systemd units $0 and cockpit-oscap-scan.service were not found. They are installed by the cockpit-oscap package; a development checkout linked with make devel-install does not include them."), TIMER_UNIT)}
                     </Alert>
                 </StackItem>
@@ -249,6 +249,7 @@ export const SchedulePage = () => {
             {notice && (
                 <StackItem>
                     <Alert
+component="h2"
 variant="success" isInline title={notice}
                            actionClose={<AlertActionCloseButton onClose={() => setNotice(null)} />}
                     />
@@ -305,7 +306,7 @@ variant="success" isInline title={notice}
                                 <DescriptionListTerm>{_("Profile")}</DescriptionListTerm>
                                 <DescriptionListDescription>
                                     {activeProfile
-                                        ? <>{activeProfile.title}{activeProfile.tailoring_path && <> {" "}<TailoredLabel /></>}</>
+                                        ? <>{activeProfile.title}{activeProfile.tailored_profile_id && <> {" "}<TailoredLabel /></>}</>
                                         : <span className="oscap-muted">{_("No active profile")}</span>}
                                 </DescriptionListDescription>
                             </DescriptionListGroup>

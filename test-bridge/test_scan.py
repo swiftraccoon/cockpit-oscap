@@ -313,22 +313,77 @@ def test_load_result_without_arf_has_empty_path(bridge):
         bridge.cmd_generate_report(["2026-04-08T025531-base"])
 
 
-def test_scan_ignores_tailoring_made_for_other_content(bridge):
+def test_scan_skips_tailoring_of_unknown_profile(bridge):
     mods = [{"idref": RULE_AUDIT, "action": "unselect"}]
-    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
-                                                  "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
-    path = bridge.TAILORING_DIR / "rhel9.xml"
+    missing = "xccdf_org.test.content_profile_missing"
+    _profile_id, xml = bridge.build_tailoring_xml(missing, "Gone", mods, "/elsewhere/ssg-other-ds.xml")
+    path = bridge.TAILORING_DIR / "gone.xml"
     bridge._atomic_write(path, xml)
     bridge.save_config({"tailorings": {PROFILE_BASE: str(path)}, "active_profile": PROFILE_BASE})
 
-    # a registered tailoring for other content is skipped: the base profile is scanned instead
+    # a registered tailoring oscap could not evaluate is skipped: the base profile is scanned instead
     request = bridge._resolve_scan_request([])
     assert request["profile_id"] == PROFILE_BASE
     assert request["tailoring_path"] is None
     assert request["total_rules"] == 3
     # an explicitly requested one is an error
-    with pytest.raises(bridge.BridgeError, match="created for"):
+    with pytest.raises(bridge.BridgeError, match="not part of"):
         bridge._resolve_scan_request([PROFILE_BASE, "--tailoring-path", str(path)])
+
+    # a different datastream name alone is fine (rule ids are shared across SSG products)
+    profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
+                                                 "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    bridge._atomic_write(path, xml)
+    request = bridge._resolve_scan_request([])
+    assert request["profile_id"] == profile_id
+    assert request["tailoring_path"] == str(path)
+    assert request["tailoring_origin"] == str(path)
+    assert request["temp_files"] == []
+
+
+def test_rescan_reuses_tailoring_recorded_in_arf(bridge, datastream):
+    result_id = "2026-04-08T025531-base"
+    _write_result(bridge, result_id, base_profile_id=PROFILE_BASE, profile_id=f"{PROFILE_BASE}_customized",
+                  tailored=True, tailoring_path="/gone/base-tailoring.xml", datastream=datastream)
+    arf = bridge.RESULTS_DIR / f"{result_id}.arf.xml"
+    arf.write_text(
+        '<arf:asset-report-collection xmlns:arf="urn:oasis:names:tc:dfi:2.0:asset-report-format:1.1" '
+        'xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2"><arf:report-requests><arf:report-request id="r">'
+        f'<arf:content><xccdf:Tailoring id="t"><xccdf:benchmark href="{datastream}"/>'
+        f'<xccdf:Profile id="{PROFILE_BASE}_customized" extends="{PROFILE_BASE}"><xccdf:title>Custom</xccdf:title>'
+        f'<xccdf:select idref="{RULE_AUDIT}" selected="false"/></xccdf:Profile></xccdf:Tailoring>'
+        "</arf:content></arf:report-request></arf:report-requests></arf:asset-report-collection>")
+
+    request = bridge._resolve_scan_request(["--rescan-of", result_id, "--source", "interactive"])
+    assert request["base_profile_id"] == PROFILE_BASE
+    assert request["profile_id"] == f"{PROFILE_BASE}_customized"
+    assert request["profile_title"] == "Custom"
+    assert request["total_rules"] == 2
+    assert request["datastream"] == datastream
+    assert request["tailoring_origin"] == "/gone/base-tailoring.xml"
+    temp = request["tailoring_path"]
+    assert temp is not None
+    assert bridge.Path(temp).is_file()
+    assert request["temp_files"] == [temp]
+    bridge.Path(temp).unlink()
+
+    # without an ARF and without a registered tailoring the base profile is scanned
+    arf.unlink()
+    request = bridge._resolve_scan_request(["--rescan-of", result_id])
+    assert request["profile_id"] == PROFILE_BASE
+    assert request["tailoring_path"] is None
+    assert request["temp_files"] == []
+
+    # a scan that never used a tailoring is repeated without one, even if one is registered now
+    _write_result(bridge, "2026-04-08T030000-base", base_profile_id=PROFILE_BASE, tailored=False)
+    mods = [{"idref": RULE_AUDIT, "action": "unselect"}]
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods, datastream)
+    path = bridge.TAILORING_DIR / "base.xml"
+    bridge._atomic_write(path, xml)
+    bridge.save_config({"tailorings": {PROFILE_BASE: str(path)}})
+    assert bridge._resolve_scan_request(["--rescan-of", "2026-04-08T030000-base"])["tailoring_path"] is None
+    with pytest.raises(bridge.BridgeError, match="not found"):
+        bridge._resolve_scan_request(["--rescan-of", "2026-01-01T000000-nope"])
 
 
 def test_progress_survives_closed_stdout(bridge, monkeypatch):
@@ -343,7 +398,9 @@ def test_progress_survives_closed_stdout(bridge, monkeypatch):
 
     monkeypatch.setattr(bridge, "output_json", broken)
     monkeypatch.setattr(bridge, "_silence_stdout", lambda: silenced.append(True))
+    monkeypatch.setattr(bridge, "STATE_WRITE_INTERVAL", 3600)  # only the first state write lands
     runner = bridge._OscapRun(["oscap"], request, "2026-04-08T02:55:31+00:00")
+    runner.last_state_write = float("-inf")
     runner._progress(RULE_AUDIT, "pass")
     runner._progress(RULE_ROOT_LOGIN, "fail")
     assert len(written) == 1
@@ -375,7 +432,8 @@ exit 0
     assert state["status"] == "failed"
     assert state["profile_title"] == "Base Profile"
     assert "unexpectedly" in state["error"]
-    # the lock is released again
+    # the unusable results file does not linger, and the lock is released again
+    assert not list(bridge.RESULTS_DIR.glob("*.arf.xml"))
     os.close(bridge._scan_lock())
 
 
@@ -390,3 +448,17 @@ def test_main_handles_reader_going_away(bridge, monkeypatch):
         bridge.main(["get-config"])
     assert exc.value.code == 1
     assert silenced == [True]
+
+    # ... also while an error is being reported (a cancelled scan closes the channel first)
+    def failing(_args):
+        raise bridge.BridgeError("the scan was cancelled")
+
+    def closed(_data):
+        raise BrokenPipeError
+
+    monkeypatch.setitem(bridge.HANDLERS, "get-config", failing)
+    monkeypatch.setattr(bridge, "output_json", closed)
+    with pytest.raises(SystemExit) as exc:
+        bridge.main(["get-config"])
+    assert exc.value.code == 1
+    assert silenced == [True, True]

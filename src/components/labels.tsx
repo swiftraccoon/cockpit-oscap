@@ -14,6 +14,7 @@ import cockpit from "cockpit";
 import * as timeformat from "timeformat";
 
 import {
+    SEVERITIES,
     formatScore,
     normalizeResult,
     normalizeSeverity,
@@ -100,6 +101,24 @@ function riskText(level: string): string {
         return level;
     }
 }
+
+/** How many of the given rules fall in each severity, highest first (empty severities are omitted). */
+export const SeverityCounts = ({ rules }: { rules: { severity: string }[] }) => {
+    const counts = new Map<Severity, number>();
+    for (const rule of rules) {
+        const severity = normalizeSeverity(rule.severity);
+        counts.set(severity, (counts.get(severity) ?? 0) + 1);
+    }
+    return (
+        <span className="oscap-inline-list">
+            {SEVERITIES.filter(severity => counts.has(severity)).map(severity => (
+                <Label key={severity} color={SEVERITY_COLORS[severity]} variant="outline" isCompact>
+                    {cockpit.format("$0 $1", counts.get(severity), severityLabel(severity))}
+                </Label>
+            ))}
+        </span>
+    );
+};
 
 /** Risk of applying an automated fix, with the reason as a tooltip. */
 export const RiskLabel = ({ level, reason }: { level: string; reason?: string }) => {

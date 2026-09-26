@@ -139,27 +139,47 @@ def test_content_stem(bridge, name, stem):
     assert bridge._content_stem(name) == stem
 
 
-def test_tailoring_matches_content(bridge, datastream):
+def test_tailoring_applicability(bridge, datastream):
+    benchmark = bridge.load_benchmark(datastream)
     _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
     info = bridge.parse_tailoring_xml(xml)
-    assert bridge._tailoring_matches(info, datastream)
-    assert bridge._tailoring_matches(info, "/elsewhere/ssg-test-ds-1.2.xml")
-    assert not bridge._tailoring_matches(info, "/elsewhere/ssg-other-ds.xml")
+    assert bridge._tailoring_problem(info, benchmark, datastream) == ""
+    assert bridge._href_mismatch(info, datastream) == ""
+    assert bridge._href_mismatch(info, "/elsewhere/ssg-test-ds-1.2.xml") == ""
+    note = bridge._href_mismatch(info, "/elsewhere/ssg-other-ds.xml")
+    assert "ssg-test-ds.xml" in note
+    assert "ssg-other-ds.xml" in note
+    # hrefs that are not content file names (fragments, empty) are not judged
+    info["benchmark_href"] = "#xccdf_org.test.content_benchmark_TEST"
+    assert bridge._href_mismatch(info, "/elsewhere/ssg-other-ds.xml") == ""
     info["benchmark_href"] = ""
-    assert bridge._tailoring_matches(info, "/elsewhere/ssg-other-ds.xml")  # nothing to check against
+    assert bridge._href_mismatch(info, "/elsewhere/ssg-other-ds.xml") == ""
+    # only a base profile oscap cannot find makes a tailoring unusable
+    info["base_profile_id"] = "xccdf_org.test.content_profile_missing"
+    assert "not part of ssg-test-ds.xml" in bridge._tailoring_problem(info, benchmark, datastream)
+    info["base_profile_id"] = ""
+    assert bridge._tailoring_problem(info, benchmark, datastream) == ""
 
 
-def test_import_tailoring_rejects_other_content(run_bridge, bridge):
+def test_import_tailoring_notes_other_content(run_bridge, bridge):
+    # a tailoring written on another SSG product (same rule ids) imports with a note
     _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS,
                                                   "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
-    reply = run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml, expect_rc=1)
-    assert "ssg-rhel9-ds.xml" in reply["error"]
-    assert "ssg-test-ds.xml" in reply["error"]
-    assert "tailorings" not in run_bridge("get-config")
-    # matching content (a different copy of the same datastream) is fine
+    info = run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    assert "ssg-rhel9-ds.xml" in info["warning"]
+    assert "ssg-test-ds.xml" in info["warning"]
+    assert run_bridge("get-config")["tailorings"] == {PROFILE_BASE: info["path"]}
+    # another copy of the same datastream is not worth a note
     _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS,
                                                   "/backup/ssg-test-ds-1.2.xml")
     assert run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)["warning"] == ""
+    # one customizing a profile this content does not have is refused
+    _profile_id, xml = bridge.build_tailoring_xml("xccdf_org.test.content_profile_missing", "Gone", MODIFICATIONS,
+                                                  "/backup/ssg-test-ds.xml")
+    reply = run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml, expect_rc=1)
+    assert "not part of ssg-test-ds.xml" in reply["error"]
+    assert "error" in run_bridge("import-tailoring", "xccdf_org.test.content_profile_nope", "-", stdin=xml,
+                                 expect_rc=1)
 
 
 def test_tailoring_document_uses_xccdf_tailoring_element(bridge, datastream):
