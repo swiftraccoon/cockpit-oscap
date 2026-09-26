@@ -31,7 +31,15 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import { TruncatedText } from "../components/TruncatedText";
-import { downloadFile, errorMessage, matchesSearch, parseTimestamp, profileShortName, safeFilename } from "../helpers";
+import {
+    downloadFile,
+    errorMessage,
+    matchesSearch,
+    parseTimestamp,
+    profileShortName,
+    safeFilename,
+    sameContent,
+} from "../helpers";
 import type { ProfileInfo, ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
@@ -40,15 +48,22 @@ export const ProfilesPage = () => {
     const app = useApp();
     const Dialogs = useDialogs();
     const data = useAsync(async () => {
-        const [profiles, config, results] = await Promise.all([listProfiles(), getConfig(), listResults()]);
+        // the scan history only decorates the cards, so a failure to read it must not hide the profiles
+        const [profiles, config, history] = await Promise.all([
+            listProfiles(),
+            getConfig(),
+            listResults().then(results => ({ results, error: null as string | null }))
+                    .catch((err: unknown) => ({ results: [] as ResultSummary[], error: errorMessage(err) })),
+        ]);
         // newest first, so the first summary per base profile (scanned with this content) is its latest scan
         const datastream = app.backend.content.datastream_path;
         const latest = new Map<string, ResultSummary>();
-        for (const summary of results) {
-            if (summary.status === "complete" && summary.datastream === datastream && !latest.has(summary.base_profile_id))
+        for (const summary of history.results) {
+            if (summary.status === "complete" && sameContent(summary.datastream, datastream) &&
+                !latest.has(summary.base_profile_id))
                 latest.set(summary.base_profile_id, summary);
         }
-        return { profiles, config, latest };
+        return { profiles, config, latest, historyError: history.error };
     }, [app.version, app.backend.content.datastream_path]);
     const [search, setSearch] = useState("");
     const [busy, setBusy] = useState<string | null>(null);
@@ -59,7 +74,7 @@ export const ProfilesPage = () => {
     if (data.error || !data.data)
         return <ErrorState title={_("Failed to load profiles")} error={data.error} onRetry={() => data.reload()} />;
 
-    const { profiles, config, latest } = data.data;
+    const { profiles, config, latest, historyError } = data.data;
     const datastreams = app.backend.content.available;
     const readOnly = app.superuser === false;
 
@@ -153,6 +168,11 @@ export const ProfilesPage = () => {
                     </ToolbarContent>
                 </Toolbar>
             </StackItem>
+            {historyError && (
+                <StackItem>
+                    <ErrorAlert title={_("Scan history is unavailable")} error={historyError} />
+                </StackItem>
+            )}
             {error && (
                 <StackItem>
                     <ErrorAlert title={_("Operation failed")} error={error} onDismiss={() => setError(null)} />

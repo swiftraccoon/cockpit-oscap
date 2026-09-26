@@ -272,6 +272,8 @@ class RuleDetail(TypedDict):
     group_path: list[str]
     has_fix: bool
     fix_systems: list[str]
+    #: the rule was described from the configured content because the requested one is gone
+    content_substituted: bool
 
 
 class RuleResultItem(TypedDict):
@@ -1003,6 +1005,7 @@ def rule_detail(ds_path: str, rule_id: str) -> RuleDetail:
         group_path=index.group_path.get(rule_id, []),
         has_fix=_has_bash_fix(rule),
         fix_systems=sorted({f.get("system", "") for f in fixes}),
+        content_substituted=False,
     )
 
 
@@ -1025,8 +1028,22 @@ def cmd_rule_info(args: list[str]) -> None:
     positional = _positional(args)
     if not positional:
         raise BridgeError("rule-info requires a rule id argument")
-    ds_path = resolve_datastream(_opt(args, "--datastream"))
-    output_json(rule_detail(ds_path, positional[0]))
+    requested = _opt(args, "--datastream")
+    substituted = False
+    if requested:
+        try:
+            Path(requested).stat()
+        except FileNotFoundError:
+            # results record the content they were scanned with; once it is gone the configured
+            # content still describes the rule (ids are shared across SSG products)
+            log.info("datastream %s is gone; describing %s from the configured content", requested, positional[0])
+            requested = None
+            substituted = True
+        except OSError as exc:
+            raise BridgeError(f"cannot read datastream {requested}: {exc}") from exc
+    detail = rule_detail(resolve_datastream(requested), positional[0])
+    detail["content_substituted"] = substituted
+    output_json(detail)
 
 
 # ---------------------------------------------------------------------------

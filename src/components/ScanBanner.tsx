@@ -42,7 +42,7 @@ export const ScanBanner = () => {
                     measureLocation="outside"
                     title={total > 0 ? cockpit.format(_("Rule $0 of $1"), current, total) : _("Starting…")}
                 />
-                <ScanEta started={state.started} progress={state.progress ?? 0} />
+                <ScanEta scanKey={state.started ?? ""} progress={state.progress ?? 0} />
             </Alert>
         </PageSection>
     );

@@ -97,7 +97,7 @@ toggleText={toggle} isExpanded={expanded} onToggle={(_ev, value) => setExpanded(
     );
 };
 
-export const RuleDetails = ({ ruleId, datastream, message, description, active = true, onRemediate }: {
+export const RuleDetails = ({ ruleId, datastream, message, description, onRemediate }: {
     ruleId: string;
     /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
     datastream?: string | undefined;
@@ -105,20 +105,23 @@ export const RuleDetails = ({ ruleId, datastream, message, description, active =
     message?: string;
     /** Already-known description, shown while the full details load. */
     description?: string;
-    /** Whether the details are visible; nothing is fetched until they are. */
-    active?: boolean;
     /** Offered next to the remediation info when the rule ships an automated fix. */
     onRemediate?: () => void;
 }) => {
-    const { data, error, loading } = useAsync(
-        () => (active ? loadRule(ruleId, datastream) : Promise.resolve<RuleDetail | null>(null)),
-        [ruleId, datastream, active]);
+    // Callers mount this only for expanded rows, so the fetch happens on first expansion.
+    const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
 
     return (
         <div className="oscap-expanded-details">
             {message && <Alert component="h2" variant="warning" isInline isPlain title={_("Scanner message")}>{message}</Alert>}
             {error && (
                 <Alert component="h2" variant="danger" isInline isPlain title={_("Rule details are unavailable")}>{error}</Alert>
+            )}
+            {data?.content_substituted && (
+                <Alert
+                    component="h2" variant="info" isInline isPlain
+                    title={_("Described from the currently installed content; the content this scan used is no longer installed.")}
+                />
             )}
             <DescriptionList isCompact isHorizontal horizontalTermWidthModifier={{ default: "14ch" }}>
                 <DescriptionListGroup>

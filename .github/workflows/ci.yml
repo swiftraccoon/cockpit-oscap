@@ -30,6 +30,9 @@ jobs:
       - name: Build
         run: make
 
+      - name: Distribution tarball
+        run: make dist
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -38,6 +41,9 @@ jobs:
 
       - name: Stylelint
         run: npm run stylelint
+
+      - name: Unit tests (helpers)
+        run: npm run test:unit
 
       - name: Translation template
         run: make po/oscap.pot

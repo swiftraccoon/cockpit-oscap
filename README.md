@@ -113,6 +113,7 @@ npm run stylelint
 ruff check src/oscap-bridge.py test-bridge/
 mypy src/oscap-bridge.py
 python3 -m pytest    # bridge unit tests; an end-to-end scan runs when oscap and SSG content are installed
+npm run test:unit    # frontend helper unit tests (node's test runner, no browser needed)
 make lint            # all of the above
 make codecheck       # cockpit's static checks
 make check           # browser integration tests in a cockpit test VM
@@ -144,6 +145,19 @@ current so every page can show a running scan, interactive or scheduled.
 Data lives in `/var/lib/cockpit-oscap`: `config.json` (active profile,
 datastream override, retention, tailoring files), `results/` (ARF + JSON per
 scan), `tailoring/` and `remediation/` (applied scripts).
+
+## Releasing
+
+Releases are cut from annotated tags named after the version (no `v` prefix):
+
+```bash
+git tag -a 1.0 -m "Release notes go here"
+git push origin 1.0
+```
+
+The `release` workflow then builds `make dist` and publishes the tarball with
+the whole tag message as the release note. `git describe` also feeds the version
+into the tarball name and the RPM spec.
 
 ## License
 

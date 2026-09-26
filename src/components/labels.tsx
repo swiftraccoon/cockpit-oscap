@@ -102,12 +102,19 @@ function riskText(level: string): string {
     }
 }
 
-const SEVERITY_COUNT_FORMATS: Record<Severity, string> = {
-    high: _("$0 high"),
-    medium: _("$0 medium"),
-    low: _("$0 low"),
-    unknown: _("$0 unknown"),
-};
+/** Translated when rendered: at module load the message catalog is not available yet. */
+function severityCount(severity: Severity, count: number): string {
+    switch (severity) {
+    case "high":
+        return cockpit.format(_("$0 high"), count);
+    case "medium":
+        return cockpit.format(_("$0 medium"), count);
+    case "low":
+        return cockpit.format(_("$0 low"), count);
+    default:
+        return cockpit.format(_("$0 unknown"), count);
+    }
+}
 
 /** How many of the given rules fall in each severity, highest first (empty severities are omitted). */
 export const SeverityCounts = ({ rules }: { rules: { severity: string }[] }) => {
@@ -120,7 +127,7 @@ export const SeverityCounts = ({ rules }: { rules: { severity: string }[] }) => 
         <span className="oscap-inline-list">
             {SEVERITIES.filter(severity => counts.has(severity)).map(severity => (
                 <Label key={severity} color={SEVERITY_COLORS[severity]} variant="outline" isCompact>
-                    {cockpit.format(SEVERITY_COUNT_FORMATS[severity], counts.get(severity))}
+                    {severityCount(severity, counts.get(severity) ?? 0)}
                 </Label>
             ))}
         </span>

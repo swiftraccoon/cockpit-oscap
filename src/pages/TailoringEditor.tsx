@@ -442,13 +442,15 @@ variant="link" isInline isDisabled={readOnly || shownRules.length === 0}
                                 { title: <SeverityLabel severity={rule.severity} /> },
                                 { title: rule.group || _("Uncategorized") },
                             ],
-                            expandedContent: (
-                                <RuleDetails
-                                    ruleId={rule.id} description={rule.description}
-                                    datastream={app.backend.content.datastream_path}
-                                    active={Boolean(expandedRules[rule.id])}
-                                />
-                            ),
+                            // details exist only for expanded rows: large profiles have hundreds of rules
+                            expandedContent: expandedRules[rule.id]
+                                ? (
+                                    <RuleDetails
+                                        ruleId={rule.id} description={rule.description}
+                                        datastream={app.backend.content.datastream_path}
+                                    />
+                                )
+                                : <span />,
                         };
                     })}
                 />
@@ -547,7 +549,7 @@ key={option.selector} value={option.selector}
     return (
         <>
             <PageSection type="breadcrumb" hasBodyWrapper={false}>
-                <Breadcrumb>
+                <Breadcrumb className="oscap-breadcrumb">
                     <BreadcrumbItem to="#/profiles" onClick={ev => { ev.preventDefault(); cockpit.location.go(["profiles"]) }}>
                         {_("Profiles")}
                     </BreadcrumbItem>

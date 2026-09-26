@@ -84,10 +84,10 @@ export const RemediationDialog = ({ result, initialSelection, onRescanned }: {
     const selection = useMemo(() => {
         if (selected)
             return selected;
-        if (initialSelection && !requestedMissing)
-            return new Set(requested.map(r => r.id));
+        if (initialSelection)
+            return new Set(requested.map(r => r.id));  // empty when the chosen rule has no fix: nothing is applied unasked
         return new Set(fixable.filter(r => r.risk_level !== "high").map(r => r.id));
-    }, [selected, fixable, initialSelection, requested, requestedMissing]);
+    }, [selected, fixable, initialSelection, requested]);
 
     const selectedRules = fixable.filter(r => selection.has(r.id));
 

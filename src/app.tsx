@@ -20,6 +20,7 @@ import { usePageLocation } from "hooks";
 
 import { detectBackend, listResults } from "./api";
 import { useAsync, useScanState, useSuperuser } from "./app-hooks";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ScanBanner } from "./components/ScanBanner";
 import { ScanDialog } from "./components/ScanDialog";
 import { ErrorState, LimitedAccessAlert, Loading, SetupNeeded } from "./components/states";
@@ -30,15 +31,15 @@ import { ResultsPage } from "./pages/ResultsPage";
 import { SchedulePage } from "./pages/SchedulePage";
 import { TailoringEditor } from "./pages/TailoringEditor";
 import { formatScore, scoreVariant } from "./helpers";
-import type { BackendInfo, ResultSummary, ScanState } from "./types";
+import type { BackendInfo, ResultSummary } from "./types";
 
 const _ = cockpit.gettext;
 
 const RELOAD_COALESCE_MS = 150;
 
 /** What Cockpit's navigation should flag next to "Compliance", or null when all is well. */
-function complianceStatus(results: ResultSummary[], scanState: ScanState | null): Status | null {
-    if (scanState && !scanState.running && scanState.status === "failed")
+function complianceStatus(results: ResultSummary[], scanning: boolean, scanStatus: string | undefined): Status | null {
+    if (!scanning && scanStatus === "failed")
         return { type: "warning", title: _("The last compliance scan failed") };
     const latest = results.find(r => r.status === "complete");
     if (latest && scoreVariant(latest.score) === "danger")
@@ -144,16 +145,18 @@ const AppShell = () => {
     const info = backend.data;
 
     // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
-    // so the icon appears without visiting it)
+    // so the icon appears without visiting it). Keyed on reloads and scan-state transitions only,
+    // not on every progress write.
+    const scanStatus = scanState?.status;
     useEffect(() => {
         if (!info || !info.oscap || !info.content.present || scanning)
             return undefined;
         let cancelled = false;
         listResults()
-                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanState)); })
+                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanning, scanStatus)); })
                 .catch(() => { if (!cancelled) page_status.set_own(null); });
         return () => { cancelled = true };
-    }, [info, version, scanning, scanState]);
+    }, [info, version, scanning, scanStatus]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,
@@ -243,7 +246,7 @@ key={name} eventKey={name} id={`tab-${name}`} tabContentId={`page-${name}`}
                     </PageSection>
                 )}
                 <ScanBanner />
-                {content}
+                <ErrorBoundary key={`${page}/${detail ?? ""}`}>{content}</ErrorBoundary>
             </Shell>
         </AppContext.Provider>
     );

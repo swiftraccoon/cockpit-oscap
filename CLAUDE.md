@@ -15,11 +15,13 @@ src/
   app-hooks.ts        # useAsync, useScanState (watches scan-state.json), useSuperuser
   app.tsx             # Shell — tabs, scan banner, cockpit.location routing, AppContext
   pages/              # Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
+  calendar.ts         # systemd OnCalendar parsing/description (unit-tested)
   components/         # ScanDialog, RemediationDialog, RuleDetails, ScoreTrend, ScanEta, ActionsMenu,
-                      # TruncatedText, labels, states, ConfirmDialog
+                      # TruncatedText, ErrorBoundary, labels, states, ConfirmDialog
   app.scss            # Page styles (PatternFly 6 tokens only; light and dark themes)
   manifest.json       # Cockpit manifest — menu entry, keywords, docs, install hints
 test-bridge/          # pytest unit tests (synthetic datastream + ARF fixtures, mocked systemctl)
+test/unit/            # Frontend helper unit tests (run with npm run test:unit)
 test/                 # Browser integration tests (check-oscap, run in a cockpit test VM)
 systemd/              # cockpit-oscap-scan.service + .timer for scheduled scans
 packaging/            # RPM spec template, Arch PKGBUILD
@@ -44,6 +46,7 @@ build (see `COCKPIT_REPO_COMMIT` in Makefile).
 
 ```bash
 python3 -m pytest         # Bridge unit tests; an end-to-end scan runs when oscap + SSG content exist
+npm run test:unit         # Frontend helper unit tests (node:test; test/unit, cockpit.js stubbed)
 make lint                 # tsc, eslint, stylelint, ruff, mypy
 make check                # Browser integration tests (needs VM image)
 make codecheck            # Static analysis via test/common/static-code
@@ -90,8 +93,8 @@ Data persisted in `/var/lib/cockpit-oscap/` (`config.json`, `results/`, `tailori
 ### Frontend
 
 React + PatternFly 6, reusing cockpit's shared components from `pkg/lib`
-(`ListingTable`, `EmptyStatePanel`, `KebabDropdown`, `SimpleSelect`, `dialogs`,
-`timeformat`, `superuser`). Routing via `cockpit.location`: `overview`, `profiles`,
+(`ListingTable`, `EmptyStatePanel`, `SimpleSelect`, `dialogs`, `timeformat`,
+`superuser`, `notifications`). Routing via `cockpit.location`: `overview`, `profiles`,
 `profiles/<id>` (tailoring editor), `results`, `results/<id>`, `schedule`. Scanning is a
 dialog available from every tab (the old `scan` route redirects to `overview`).
 `AppContext` (`useApp()`) exposes backend info, a `version` counter pages reload on,

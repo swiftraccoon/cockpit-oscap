@@ -62,6 +62,48 @@ class TestOscap(testlib.MachineCase):
         b.click("#scan-dialog button:contains('Cancel')")
         b.wait_not_present("#scan-dialog")
 
+    @testlib.timeout(1200)
+    def testScan(self) -> None:
+        b = self.browser
+
+        if not self.has_content:
+            self.skipTest("no SCAP Security Guide content in this image")
+
+        # the scan writes results and state under /var/lib/cockpit-oscap; leave the VM as it was
+        # (restore_dir removes the directory again when it did not exist before)
+        self.restore_dir("/var/lib/cockpit-oscap")
+
+        self.login_and_go("/oscap")
+        b.wait_visible("#oscap-tabs")
+        b.click("#run-scan")
+        b.wait_visible("#scan-dialog")
+        b.wait_visible("#scan-start:not([disabled])")
+        b.click("#scan-start")
+        b.wait_visible("#scan-progress")
+        # a complete profile takes a while on a test VM
+        with b.wait_timeout(900):
+            b.wait_visible("#scan-view-results")
+        b.click("#scan-view-results")
+
+        # the result page: summary, every rule, details on demand
+        b.wait_visible("#result-summary")
+        b.wait_in_text("#result-summary", "%")
+        # ListingTable renders one <tbody> per row
+        b.wait_visible("#result-rules tbody:first-of-type > tr")
+        b.click("#result-rules tbody:first-of-type > tr td.pf-v6-c-table__toggle button")
+        b.wait_in_text("#result-rules tr:not([hidden]) .oscap-expanded-details", "Rule ID")
+        b.click("#result-actions")
+        b.wait_visible(".pf-v6-c-menu__item:contains('Download HTML report')")
+        b.wait_visible(".pf-v6-c-menu__item:contains('Download rule results (CSV)')")
+        b.key("Escape")
+
+        # the scan shows up in the history and on the overview
+        b.click("nav.pf-v6-c-breadcrumb a:contains('Results')")
+        b.wait_visible("#results-table tbody:first-of-type > tr")
+        b.click("#oscap-tabs button:contains('Overview')")
+        b.wait_visible("#overview-latest")
+        b.wait_in_text("#overview-latest", "%")
+
     def testProfileEditor(self) -> None:
         b = self.browser
 
