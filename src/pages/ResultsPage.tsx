@@ -32,6 +32,7 @@ import {
     downloadFile,
     errorMessage,
     matchesSearch,
+    openInNewTab,
     parseTimestamp,
     profileChoices,
     resultsToCsv,
@@ -45,6 +46,30 @@ const _ = cockpit.gettext;
 export async function downloadReport(id: string): Promise<void> {
     const report = await generateReport(id);
     downloadFile(`compliance-report-${safeFilename(id)}.html`, report.html, "text/html");
+}
+
+// Runs inside the scanner's report: opens the details of the rule named in the location's fragment.
+// The report gives each rule's panel the class rule-detail-id-<rule id> and a dialog per panel id.
+const REPORT_FOCUS_SCRIPT = `
+window.addEventListener("load", function () {
+    var rule = decodeURIComponent(location.hash.slice(1));
+    var panel = rule && document.getElementsByClassName("rule-detail-id-" + rule)[0];
+    if (!panel)
+        return;
+    var suffix = (panel.id || "").replace(/^rule-detail-/, "");
+    if (suffix && typeof openRuleDetailsDialog === "function") {
+        try { openRuleDetailsDialog(suffix); return; } catch (e) { /* fall back to scrolling */ }
+    }
+    panel.scrollIntoView();
+});
+`;
+
+/** Show the scanner's HTML report in a new tab, at a rule's details when one is given. */
+export function openReport(id: string, ruleId = ""): Promise<void> {
+    const html = generateReport(id).then(report => (ruleId
+        ? report.html.replace(/<\/body>/i, `<script>${REPORT_FOCUS_SCRIPT}</script></body>`)
+        : report.html));
+    return openInNewTab(html, "text/html", _("Rendering the scanner's report…"), ruleId);
 }
 
 export async function downloadArf(id: string): Promise<void> {
@@ -321,6 +346,12 @@ key="view"
                                                                   onClick={() => cockpit.location.go(["results", summary.id])}
                                                     >
                                                         {_("View details")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="open-report" isDisabled={!summary.has_arf}
+                                                                  onClick={() => guarded(() => openReport(summary.id))}
+                                                    >
+                                                        {_("Open scanner report")}
                                                     </DropdownItem>,
                                                     <DropdownItem
 key="report" isDisabled={!summary.has_arf}

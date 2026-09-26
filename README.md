@@ -51,7 +51,8 @@ scheduled scans.
   filters by result, severity and category, and a comparison with the previous
   scan of the same profile (new failures, rules now passing) or with any
   earlier one you pick.
-  Every scan offers its HTML report, ARF results, a CSV of its rule results,
+  Every scan offers its HTML report (opened in a tab, straight at a rule from
+  its details, or downloaded), ARF results, a CSV of its rule results,
   the remediation for its failed rules as a Bash script or an Ansible
   playbook, and an evidence bundle: one ZIP with all of that plus the
   customization applied, the remediation records and a cover sheet, ready

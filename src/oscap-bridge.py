@@ -2489,17 +2489,21 @@ def cmd_remediate(args: list[str]) -> None:
     output_json({"type": "done", "result": remediate(_load_result(positional[0]), rule_ids)})
 
 
+def generate_report(arf_path: str) -> str:
+    """The scanner's HTML report of an ARF."""
+    rc, stdout, stderr = run_cmd([_require_oscap(), "xccdf", "generate", "report", arf_path], timeout=REPORT_TIMEOUT)
+    if rc != 0:
+        raise BridgeError(f"oscap generate report failed: {stderr.strip()[-ERROR_TAIL:]}")
+    return stdout
+
+
 def cmd_generate_report(args: list[str]) -> None:
     if not args:
         raise BridgeError("generate-report requires a result id")
     result = _load_result(args[0])
     if not result["arf_path"] or not Path(result["arf_path"]).is_file():
         raise BridgeError("the results file for this scan is no longer available")
-    rc, stdout, stderr = run_cmd([_require_oscap(), "xccdf", "generate", "report", result["arf_path"]],
-                                 timeout=REPORT_TIMEOUT)
-    if rc != 0:
-        raise BridgeError(f"oscap generate report failed: {stderr.strip()[-ERROR_TAIL:]}")
-    output_json({"id": result["id"], "html": stdout})
+    output_json({"id": result["id"], "html": generate_report(result["arf_path"])})
 
 
 # ---------------------------------------------------------------------------
@@ -2507,20 +2511,31 @@ def cmd_generate_report(args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_CSV_FORMULA_RE = re.compile(r"^[=+\-@\t\r]")
+
+
+def _csv_cell(text: str) -> str:
+    """A cell that a spreadsheet will not run as a formula (the page's CSV does the same)."""
+    return f"'{text}" if _CSV_FORMULA_RE.match(text) else text
+
+
 def _rules_csv(result: ScanResult) -> str:
-    """The rule results as CSV, the columns the page's download uses."""
+    """The rule results as CSV, the columns and escaping the page's download uses."""
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\r\n")
     writer.writerow(["rule_id", "title", "result", "severity", "category", "message"])
     for rule in result["results"]:
-        writer.writerow([rule["rule_id"], rule["title"], rule["result"], rule["severity"], rule["group"],
-                         rule["message"]])
+        writer.writerow([_csv_cell(rule["rule_id"]), _csv_cell(rule["title"]), _csv_cell(rule["result"]),
+                         _csv_cell(rule["severity"]), _csv_cell(rule["group"]), _csv_cell(rule["message"])])
     return out.getvalue()
+
+
+# bookkeeping of this host, not evidence: not for the bundle's summary
+_BUNDLE_PRIVATE_KEYS = frozenset(("arf_path", "json_path", "tailoring_path", "currently_excluded"))
 
 
 def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> str:
     """A plain-text cover sheet for whoever receives the bundle."""
-    os_info = detect_content()["os"]
     lines = [
         f"Compliance evidence for {os.uname().nodename}",
         "=" * 72,
@@ -2532,7 +2547,7 @@ def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> 
         f"Status:      {result['status']}",
         f"Content:     {result['datastream'] or 'unknown'}"
         + (f" (benchmark {result['benchmark_id']} {result['benchmark_version']})" if result["benchmark_id"] else ""),
-        f"System:      {os_info.get('pretty_name') or os_info.get('id') or 'unknown'}",
+        f"System:      {_read_os_release().get('PRETTY_NAME') or 'unknown'}",
         f"Customized:  {'yes' if result['tailored'] else 'no'}",
         f"Generated:   {_iso(_now_utc())} by cockpit-oscap (bridge API {API_VERSION})",
         "",
@@ -2556,6 +2571,54 @@ def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> 
     return "\n".join(lines) + "\n"
 
 
+def _bundle_arf(bundle: zipfile.ZipFile, result: ScanResult, add: Callable[[str, str | bytes], None],
+                members: list[str], notes: list[str]) -> None:
+    """The ARF and what is derived from it: the report, and the customization the scan applied."""
+    arf_path = result["arf_path"]
+    if not arf_path or not Path(arf_path).is_file():
+        notes.append("results.arf.xml: the scanner's output of this scan is no longer stored, "
+                     "so there is no report.html and no tailoring.xml either")
+        return
+    bundle.write(arf_path, "results.arf.xml")  # streamed, not slurped: ARFs run to tens of MB
+    members.append("results.arf.xml")
+    try:
+        add("report.html", generate_report(arf_path))
+    except BridgeError as exc:
+        notes.append(f"report.html: not rendered ({exc})")
+    if not result["tailored"]:
+        return
+    try:
+        tailoring = next(ET.parse(arf_path).getroot().iter(TAG_TAILORING), None)  # noqa: S314
+    except (ET.ParseError, OSError) as exc:
+        notes.append(f"tailoring.xml: the ARF could not be read ({exc})")
+        return
+    if tailoring is None:
+        notes.append("tailoring.xml: the ARF does not carry the customization this scan applied")
+    else:
+        add("tailoring.xml", _serialize_tailoring(tailoring))
+
+
+def _bundle_remediations(result_id: str, add: Callable[[str, str | bytes], None], notes: list[str]) -> None:
+    """The scripts and records of every remediation run of the scan (root-only files)."""
+    if not REMEDIATION_DIR.is_dir():
+        return
+    denied = False
+    for script in sorted(REMEDIATION_DIR.glob("*.sh")):
+        match = _REMEDIATION_NAME_RE.match(script.stem)
+        if not match or match.group("result") != result_id:
+            continue
+        for path in (script, record_path_for(script)):
+            if not path.is_file():
+                continue
+            try:
+                add(f"remediation/{path.name}", path.read_bytes())
+            except PermissionError:
+                denied = True
+    if denied:
+        notes.append("remediation/: the scripts and records of this scan's remediation runs need "
+                     "administrative access; export the bundle from an administrative session for them")
+
+
 def export_bundle(result: ScanResult) -> tuple[str, bytes]:
     """(file name, ZIP bytes): everything recorded about a scan, for auditors and tickets."""
     members: list[str] = []
@@ -2566,31 +2629,11 @@ def export_bundle(result: ScanResult) -> tuple[str, bytes]:
             bundle.writestr(name, content)
             members.append(name)
 
-        add("summary.json", json.dumps(result, indent=1) + "\n")
+        summary = {key: value for key, value in result.items() if key not in _BUNDLE_PRIVATE_KEYS}
+        add("summary.json", json.dumps(summary, indent=1) + "\n")
         add("rules.csv", _rules_csv(result))
-        if result["arf_path"] and Path(result["arf_path"]).is_file():
-            add("results.arf.xml", Path(result["arf_path"]).read_bytes())
-            try:
-                rc, html, stderr = run_cmd([_require_oscap(), "xccdf", "generate", "report", result["arf_path"]],
-                                           timeout=REPORT_TIMEOUT)
-                if rc == 0:
-                    add("report.html", html)
-                else:
-                    notes.append(f"report.html: oscap could not render the report ({stderr.strip()[-ERROR_TAIL:]})")
-            except BridgeError as exc:
-                notes.append(f"report.html: not rendered ({exc})")
-            embedded = extract_arf_tailoring(result["arf_path"])
-            if embedded:
-                add("tailoring.xml", Path(embedded).read_bytes())
-                Path(embedded).unlink(missing_ok=True)
-        else:
-            notes.append("results.arf.xml: the scanner's output of this scan is no longer stored")
-        for run in reversed(list_remediations(result["id"])):
-            script = Path(run["script_path"])
-            record = record_path_for(script)
-            for path in (script, record):
-                if path.is_file():
-                    add(f"remediation/{path.name}", path.read_bytes())
+        _bundle_arf(bundle, result, add, members, notes)
+        _bundle_remediations(result["id"], add, notes)
         bundle.writestr("README.txt", _bundle_readme(result, members, notes))
     return f"compliance-evidence-{result['id']}.zip", buffer.getvalue()
 

@@ -67,7 +67,7 @@ import {
     severityLabel,
 } from "../helpers";
 import type { RemediationRun, ResultSummary, RuleExclusion, RuleResultItem, ScanResult } from "../types";
-import { downloadArf, downloadBundle, downloadCsv, downloadFix, downloadReport } from "./ResultsPage";
+import { downloadArf, downloadBundle, downloadCsv, downloadFix, downloadReport, openReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
 
@@ -506,6 +506,12 @@ key="rescan" isDisabled={readOnly || app.scanning}
                                                     {_("Scan again with this profile")}
                                                 </DropdownItem>,
                                                 <DropdownItem
+key="open-report" isDisabled={!result.arf_path}
+                                                              onClick={() => guarded(() => openReport(result.id))}
+                                                >
+                                                    {_("Open scanner report")}
+                                                </DropdownItem>,
+                                                <DropdownItem
 key="report" isDisabled={!result.arf_path}
                                                               onClick={() => guarded(() => downloadReport(result.id))}
                                                 >
@@ -676,6 +682,7 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                                                     datastream: loaded.datastream,
                                                     version: app.version,
                                                 }}
+                                                {...loaded.arf_path && { onOpenReport: () => guarded(() => openReport(loaded.id, rule.rule_id)) }}
                                                 {...canExclude && !loaded.currently_excluded.includes(rule.rule_id) &&
                                                     ["fail", "error"].includes(normalizeResult(rule.result)) &&
                                                     { onExclude: () => excludeRule(rule) }}

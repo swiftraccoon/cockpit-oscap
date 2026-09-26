@@ -250,7 +250,7 @@ export function resultsToCsv(result: { results: RuleResultItem[] }): string {
 }
 
 /** The bytes of a base64 string (what the bridge sends binary content as). */
-export function decodeBase64(text: string): Uint8Array {
+export function decodeBase64(text: string): Uint8Array<ArrayBuffer> {
     const binary = atob(text);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++)
@@ -259,9 +259,9 @@ export function decodeBase64(text: string): Uint8Array {
 }
 
 /** Offer `content` as a download named `filename`. */
-export function downloadFile(filename: string, content: string | Uint8Array, type = "application/octet-stream"): void {
-    // a copy gives the bytes a buffer of their own, which is what Blob wants
-    const blob = new Blob([typeof content === "string" ? content : new Uint8Array(content)], { type });
+export function downloadFile(filename: string, content: string | Uint8Array<ArrayBuffer>,
+    type = "application/octet-stream"): void {
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -271,6 +271,32 @@ export function downloadFile(filename: string, content: string | Uint8Array, typ
     document.body.removeChild(anchor);
     // give the browser a moment to start the download before revoking
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Open a document in a new tab. The tab opens at once, on the user's click (a tab opened later,
+ * after the content arrived, is what popup blockers stop), and gets the content when `load` resolves;
+ * `fragment` scrolls the document to that anchor.
+ */
+export function openInNewTab(load: Promise<string>, type: string, placeholder: string, fragment = ""): Promise<void> {
+    const tab = window.open("", "_blank");
+    if (tab) {
+        tab.document.write(`<!DOCTYPE html><title>${placeholder}</title><p style="font-family: sans-serif">${placeholder}</p>`);
+        tab.document.close();
+    }
+    return load.then(content => {
+        const url = URL.createObjectURL(new Blob([content], { type }));
+        const target = fragment ? `${url}#${encodeURIComponent(fragment)}` : url;
+        if (tab && !tab.closed)
+            tab.location.replace(target);
+        else
+            window.open(target, "_blank");
+        window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }, err => {
+        if (tab && !tab.closed)
+            tab.close();
+        throw err;
+    });
 }
 
 /** A file name fragment safe for downloads: keeps letters, digits, dot, dash and underscore. */

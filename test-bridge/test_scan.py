@@ -192,7 +192,10 @@ def test_export_bundle_packs_everything_recorded_about_a_scan(run_bridge, bridge
         assert f"remediation/{script.with_suffix('.json').name}" in names
         assert not any("other" in name for name in names)
         assert names[-1] == "README.txt"
-        assert json.loads(bundle.read("summary.json"))["id"] == result_id
+        summary = json.loads(bundle.read("summary.json"))
+        assert summary["id"] == result_id
+        private = {"arf_path", "json_path", "tailoring_path", "currently_excluded"}
+        assert not private & set(summary)
         assert bundle.read("results.arf.xml").decode() == arf_text
         assert "<xccdf:remark>waived</xccdf:remark>" in bundle.read("tailoring.xml").decode()
         csv_lines = bundle.read("rules.csv").decode().split("\r\n")
@@ -205,14 +208,55 @@ def test_export_bundle_packs_everything_recorded_about_a_scan(run_bridge, bridge
         # the HTML report needs oscap and a real ARF; either it is there or the cover sheet says why not
         assert ("report.html" in names) or ("report.html:" in readme)
 
+    # a corrupt ARF still leaves a bundle, with the ARF bytes and a note instead of the derived files
+    (bridge.RESULTS_DIR / f"{result_id}.arf.xml").write_text(arf_text[:2000])
+    again = run_bridge("export-bundle", result_id)
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(again["content_base64"]))) as bundle:
+        assert "results.arf.xml" in bundle.namelist()
+        assert "tailoring.xml" not in bundle.namelist()
+        readme = bundle.read("README.txt").decode()
+        assert "tailoring.xml: the ARF could not be read" in readme
+        assert "report.html:" in readme
     # without the scanner's output the bundle still carries what is recorded, and says what is missing
     (bridge.RESULTS_DIR / f"{result_id}.arf.xml").unlink()
     again = run_bridge("export-bundle", result_id)
     with zipfile.ZipFile(io.BytesIO(base64.b64decode(again["content_base64"]))) as bundle:
         assert "results.arf.xml" not in bundle.namelist()
-        assert "no longer stored" in bundle.read("README.txt").decode()
+        readme = bundle.read("README.txt").decode()
+        assert "no longer stored, so there is no report.html and no tailoring.xml" in readme
     assert "error" in run_bridge("export-bundle", expect_rc=1)
     assert "error" in run_bridge("export-bundle", "2026-01-01T000000-nope", expect_rc=1)
+
+
+def test_export_bundle_without_scanner_or_access(bridge, monkeypatch):
+    result_id = "2026-04-08T025531-base"
+    _write_result(bridge, result_id, results=[
+        {"rule_id": RULE_AUDIT, "result": "fail", "title": "=1+1", "severity": "medium", "message": 'a, "b"'},
+        {"rule_id": RULE_ROOT_LOGIN, "result": "pass", "title": "-x", "severity": "high", "message": "@sum"}])
+    (bridge.RESULTS_DIR / f"{result_id}.arf.xml").write_text(SYNTHETIC_ARF)
+    bridge.REMEDIATION_DIR.mkdir()
+    script = bridge.REMEDIATION_DIR / f"2026-04-09T000000-{result_id}.sh"
+    script.write_text("true\n")
+    def no_oscap() -> str:
+        raise bridge.BridgeError("oscap binary not found")
+
+    monkeypatch.setattr(bridge, "_require_oscap", no_oscap)
+    real_read_bytes = bridge.Path.read_bytes
+    monkeypatch.setattr(bridge.Path, "read_bytes",
+                        lambda self: (_ for _ in ()).throw(PermissionError(13, "denied", str(self)))
+                        if self.parent == bridge.REMEDIATION_DIR else real_read_bytes(self))
+    _name, content = bridge.export_bundle(bridge._load_result(result_id))
+    with zipfile.ZipFile(io.BytesIO(content)) as bundle:
+        names = bundle.namelist()
+        assert "report.html" not in names
+        assert not any(name.startswith("remediation/") for name in names)
+        readme = bundle.read("README.txt").decode()
+        assert "report.html: not rendered (oscap binary not found)" in readme
+        assert "remediation/: the scripts and records of this scan's remediation runs need" in readme
+        # cells a spreadsheet would run as formulas are prefixed, and quoting follows the CSV rules
+        csv_lines = bundle.read("rules.csv").decode().split("\r\n")
+        assert csv_lines[1] == f'{RULE_AUDIT},\'=1+1,fail,medium,,"a, ""b"""'
+        assert csv_lines[2] == f"{RULE_ROOT_LOGIN},'-x,pass,high,,'@sum"
 
 
 def test_rule_history_follows_one_rule_across_a_profiles_scans(run_bridge, bridge):

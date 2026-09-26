@@ -21,8 +21,9 @@ A complete rewrite of the plugin as an end-to-end compliance workflow.
 - Results history with filtering by profile, bulk deletion, per-rule details on
   demand (with the rule's history across the profile's recent scans), filters
   by result, severity and category, comparison with the previous scan or any
-  earlier one, HTML report, ARF and CSV downloads, an evidence bundle (ZIP)
-  with everything recorded about a scan, and deep links to a rule.
+  earlier one, the scanner's HTML report opened in a tab at a rule or
+  downloaded, ARF and CSV downloads, an evidence bundle (ZIP) with everything
+  recorded about a scan, and deep links to a rule.
 - "Exclude from profile" on a failed rule, with a mandatory justification;
   every later scan lists the rules its customization excluded and why.
 - Guided remediation with per-rule risk classification, one fix at a time,

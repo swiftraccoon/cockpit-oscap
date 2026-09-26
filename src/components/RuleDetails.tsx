@@ -162,7 +162,7 @@ const RuleHistory = ({ ruleId, points, currentId }: { ruleId: string; points: Ru
 };
 
 export const RuleDetails = ({
-    ruleId, datastream, message, description, onRemediate, onExclude, excluded = false, history,
+    ruleId, datastream, message, description, onRemediate, onExclude, excluded = false, history, onOpenReport,
 }: {
     ruleId: string;
     /** The SCAP content the rule belongs to (the one a result was scanned with); the configured one when unset. */
@@ -179,6 +179,8 @@ export const RuleDetails = ({
     excluded?: boolean;
     /** Show how the rule fared in the profile's recent scans (on a result page). */
     history?: HistoryRequest;
+    /** Open the scanner's HTML report at this rule (on a result page with its ARF). */
+    onOpenReport?: () => void;
 }) => {
     // Callers mount this only for expanded rows, so the fetch happens on first expansion.
     const { data, error, loading } = useAsync(() => loadRule(ruleId, datastream), [ruleId, datastream]);
@@ -298,12 +300,19 @@ id={`remediate-${ruleId}`} variant="secondary" size="sm"
                 <DescriptionListGroup>
                     <DescriptionListTerm>{_("Rule ID")}</DescriptionListTerm>
                     <DescriptionListDescription>
-                        <ClipboardCopy
+                        <span className="oscap-inline-list">
+                            <ClipboardCopy
 isReadOnly variant="inline-compact" hoverTip={_("Copy")} clickTip={_("Copied")}
-                                       className="oscap-mono"
-                        >
-                            {ruleId}
-                        </ClipboardCopy>
+                                           className="oscap-mono"
+                            >
+                                {ruleId}
+                            </ClipboardCopy>
+                            {onOpenReport && (
+                                <Button id={`report-${ruleId}`} variant="link" isInline onClick={onOpenReport}>
+                                    {_("Show in scanner report")}
+                                </Button>
+                            )}
+                        </span>
                     </DescriptionListDescription>
                 </DescriptionListGroup>
             </DescriptionList>
