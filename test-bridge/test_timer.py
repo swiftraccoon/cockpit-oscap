@@ -202,3 +202,19 @@ def test_invalid_actions(run_bridge):
     assert "error" in run_bridge("manage-timer", expect_rc=1)
     assert "error" in run_bridge("manage-timer", "restart", expect_rc=1)
     assert "error" in run_bridge("validate-calendar", expect_rc=1)
+
+
+def test_validate_calendar_separates_spec_from_options(bridge, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return 0, ("  Original form: --weekly\nNormalized form: Mon *-*-* 00:00:00\n"
+                   "    Next elapse: Mon 2026-09-28 00:00:00 UTC\n"), ""
+
+    monkeypatch.setattr(bridge, "run_cmd", fake_run)
+    monkeypatch.setattr(bridge.shutil, "which", lambda _name: "/usr/bin/systemd-analyze")
+    check = bridge.validate_calendar("--weekly")
+    assert calls == [["/usr/bin/systemd-analyze", "calendar", "--", "--weekly"]]
+    assert check["valid"] is True
+    assert check["normalized"] == "Mon *-*-* 00:00:00"

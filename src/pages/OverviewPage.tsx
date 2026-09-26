@@ -29,7 +29,9 @@ import * as timeformat from "timeformat";
 import { getConfig, getResult, listProfiles, listResults, manageTimer } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
-import { CountLabels, ScanStatusLabel, ScoreLabel, ScoreValue, SeverityLabel, TailoredLabel } from "../components/labels";
+import { ScoreTrend } from "../components/ScoreTrend";
+import type { TrendPoint } from "../components/ScoreTrend";
+import { CountLabels, ScanStatusLabel, ScoreLabel, ScoreValue, SeverityLabel, TailoredLabel, When } from "../components/labels";
 import { ErrorState, Loading } from "../components/states";
 import { compareSeverity, parseTimestamp, scoredTotal } from "../helpers";
 import type { RuleResultItem, TimerStatus } from "../types";
@@ -38,6 +40,7 @@ const _ = cockpit.gettext;
 
 const TOP_FAILED = 8;
 const RECENT_SCANS = 5;
+const TREND_POINTS = 12;
 
 const Delta = ({ current, previous }: { current: number; previous: number }) => {
     const delta = Math.round((current - previous) * 10) / 10;
@@ -57,18 +60,6 @@ function scheduleSummary(timer: TimerStatus | null): React.ReactNode {
         return <Label status="success" isCompact>{_("Enabled")}</Label>;
     return <Label color="grey" isCompact>{_("Disabled")}</Label>;
 }
-
-const When = ({ iso, fallback }: { iso: string; fallback: string }) => {
-    const date = parseTimestamp(iso);
-    if (!date)
-        return <span>{fallback}</span>;
-    return (
-        <>
-            {timeformat.dateTime(date)}
-            <span className="oscap-muted">{" · "}{timeformat.distanceToNow(date)}</span>
-        </>
-    );
-};
 
 export const OverviewPage = () => {
     const app = useApp();
@@ -124,6 +115,11 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
             .filter(r => r.result === "fail" || r.result === "error")
             .sort((a, b) => (a.result === b.result ? compareSeverity(a.severity, b.severity) : a.result === "fail" ? -1 : 1));
     const recent = results.slice(0, RECENT_SCANS);
+    const trend: TrendPoint[] = results
+            .filter(r => r.profile_id === latest.profile_id && r.status === "complete")
+            .slice(0, TREND_POINTS)
+            .reverse()
+            .map(r => ({ id: r.id, timestamp: r.timestamp, score: r.score }));
 
     return (
         <Stack hasGutter>
@@ -143,6 +139,14 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
                                     </StackItem>
                                     {previous && (
                                         <StackItem><Delta current={latest.score} previous={previous.score} /></StackItem>
+                                    )}
+                                    {trend.length > 1 && (
+                                        <StackItem>
+                                            <ScoreTrend
+                                                points={trend}
+                                                onSelect={point => cockpit.location.go(["results", point.id])}
+                                            />
+                                        </StackItem>
                                     )}
                                     <StackItem>
                                         <DescriptionList isCompact>

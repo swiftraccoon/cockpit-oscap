@@ -111,7 +111,11 @@ export const RemediationDialog = ({ result, onRescanned }: {
     function verify() {
         setPhase("rescanning");
         setScanProgress(null);
-        handle.current = scan({ profileId: result.base_profile_id, noTailoring: !result.tailored }, setScanProgress);
+        // Re-evaluate exactly what was scanned: the same base profile and the same tailoring (if any)
+        const options = result.tailoring_path
+            ? { profileId: result.base_profile_id, tailoringPath: result.tailoring_path }
+            : { profileId: result.base_profile_id, noTailoring: true };
+        handle.current = scan(options, setScanProgress);
         handle.current.promise
                 .then(scanResult => {
                     setRescan(scanResult);

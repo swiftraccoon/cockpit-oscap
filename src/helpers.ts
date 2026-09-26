@@ -102,6 +102,26 @@ export function resultLabel(result: string): string {
     }
 }
 
+export type RuleChange = "fixed" | "regressed" | "changed";
+
+const FAILING = ["fail", "error"];
+const PASSING = ["pass", "fixed"];
+
+/** How a rule's result moved since an earlier scan, or null when it did not (or was not evaluated before). */
+export function ruleChange(before: string | undefined, after: string): RuleChange | null {
+    if (before === undefined)
+        return null;
+    const was = normalizeResult(before);
+    const now = normalizeResult(after);
+    if (was === now)
+        return null;
+    if (FAILING.includes(was) && PASSING.includes(now))
+        return "fixed";
+    if (PASSING.includes(was) && FAILING.includes(now))
+        return "regressed";
+    return "changed";
+}
+
 export function emptyCounts(): ResultCounts {
     return { pass: 0, fail: 0, error: 0, notapplicable: 0, notchecked: 0, informational: 0, fixed: 0, unknown: 0 };
 }

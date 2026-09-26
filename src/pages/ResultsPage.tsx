@@ -20,14 +20,14 @@ import type { ListingTableRowProps } from "cockpit-components-table";
 import { useDialogs } from "dialogs";
 import * as timeformat from "timeformat";
 
-import { RESULTS_DIR, deleteResult, generateReport, listResults, readFile } from "../api";
+import { RESULTS_DIR, deleteResult, generateFix, generateReport, listResults, readFile } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
 import { ErrorAlert, ErrorState, Loading } from "../components/states";
 import { downloadFile, errorMessage, matchesSearch, parseTimestamp, safeFilename } from "../helpers";
-import type { ResultSummary } from "../types";
+import type { FixType, ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
 
@@ -39,6 +39,15 @@ export async function downloadReport(id: string): Promise<void> {
 export async function downloadArf(id: string): Promise<void> {
     const xml = await readFile(`${RESULTS_DIR}/${id}.arf.xml`);
     downloadFile(`compliance-results-${safeFilename(id)}.arf.xml`, xml, "application/xml");
+}
+
+/** Download the remediation for the failed rules of a scan as a Bash script or an Ansible playbook. */
+export async function downloadFix(id: string, type: FixType): Promise<void> {
+    const fix = await generateFix(id, type);
+    if (type === "ansible")
+        downloadFile(`compliance-remediation-${safeFilename(id)}.yml`, fix.script, "application/yaml");
+    else
+        downloadFile(`compliance-remediation-${safeFilename(id)}.sh`, fix.script, "text/x-shellscript");
 }
 
 export const ResultsPage = () => {
@@ -209,6 +218,18 @@ key="arf" isDisabled={!summary.has_arf}
                                                                   onClick={() => guarded(() => downloadArf(summary.id))}
                                                     >
                                                         {_("Download ARF results")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="fix-bash" isDisabled={!summary.has_arf || summary.counts.fail === 0}
+                                                                  onClick={() => guarded(() => downloadFix(summary.id, "bash"))}
+                                                    >
+                                                        {_("Download Bash remediation script")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="fix-ansible" isDisabled={!summary.has_arf || summary.counts.fail === 0}
+                                                                  onClick={() => guarded(() => downloadFix(summary.id, "ansible"))}
+                                                    >
+                                                        {_("Download Ansible playbook")}
                                                     </DropdownItem>,
                                                     <DropdownItem
 key="delete" isDanger isDisabled={app.superuser === false}

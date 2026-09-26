@@ -143,3 +143,19 @@ def test_cli_list_profiles_and_rules(run_bridge, datastream):
     info = run_bridge("rule-info", RULE_TIMEOUT)
     assert info["title"] == "Set SSH idle timeout"
     assert "error" in run_bridge("rule-info", expect_rc=1)
+
+
+def test_list_profiles_ignores_tailoring_for_other_content(bridge, datastream):
+    mods = [{"idref": RULE_AUDIT, "action": "unselect"}]
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", mods,
+                                                  "/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml")
+    path = bridge.TAILORING_DIR / "rhel9.xml"
+    bridge._atomic_write(path, xml)
+    broken = bridge.TAILORING_DIR / "broken.xml"
+    bridge._atomic_write(broken, "<nope/>")
+    profiles = bridge.list_profiles(datastream, {"tailorings": {PROFILE_BASE: str(path),
+                                                              PROFILE_EXTENDED: str(broken)}})
+    by_id = {p["id"]: p for p in profiles}
+    assert by_id[PROFILE_BASE]["tailoring_path"] is None
+    assert by_id[PROFILE_BASE]["tailored_profile_id"] is None
+    assert by_id[PROFILE_EXTENDED]["tailoring_path"] is None

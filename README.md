@@ -12,9 +12,10 @@ scheduled scans.
 
 ## Features
 
-- **Overview** – the latest compliance score with the trend since the previous
-  scan, the rules that need attention grouped by severity, the active profile
-  and the state of scheduled scanning at a glance.
+- **Overview** – the latest compliance score, the change since the previous
+  scan and a score trend across the last scans of the profile, the rules that
+  need attention grouped by severity, the active profile and the state of
+  scheduled scanning at a glance.
 - **Profiles** – every profile in the SCAP content installed on the system,
   with the OS matched automatically (Fedora, RHEL and derivatives, Debian,
   Ubuntu, openSUSE/SLE, Amazon Linux). Pick the active profile or choose
@@ -28,13 +29,16 @@ scheduled scans.
   started by the scheduler show the same progress banner. Results are stored
   as ARF plus a JSON summary and pruned to a configurable number.
 - **Results** – sortable history, per-rule results with on-demand details and
-  scanner messages, filters by result, severity and category, HTML report and
-  ARF downloads.
+  scanner messages, filters by result, severity and category, and a comparison
+  with the previous scan of the same profile (new failures, rules now passing).
+  Every scan offers its HTML report, ARF results, and the remediation for its
+  failed rules as a Bash script or an Ansible playbook.
 - **Guided remediation** – review the bash fix generated for each failed rule,
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),
-  apply the selected fixes one rule at a time, then re-scan to verify. The
-  applied script is kept for auditing; a script can also be downloaded to run
+  apply the selected fixes one rule at a time, then re-scan with the same
+  profile and customizations to verify. The applied script is kept for
+  auditing; a Bash script or Ansible playbook can also be downloaded to run
   elsewhere.
 - **Scheduled scans** – a systemd timer with daily, weekly, monthly or custom
   `OnCalendar` schedules (validated with `systemd-analyze`), the profile to use

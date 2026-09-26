@@ -1,9 +1,19 @@
 [Unit]
 Description=Cockpit OpenSCAP Compliance Scan
-Documentation=man:oscap(8)
+Documentation=man:oscap(8) https://github.com/swiftraccoon/cockpit-oscap
+# scanning needs the SCAP content and the scanner installed
+ConditionPathExists=/usr/bin/oscap
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /usr/share/cockpit/oscap/oscap-bridge.py scan
+ExecStart=/usr/bin/python3 /usr/share/cockpit/oscap/oscap-bridge.py scan --source scheduled
+# the bridge writes results to /var/lib/cockpit-oscap and logs to syslog; its
+# JSON result on stdout is only useful to the web page
 StandardOutput=null
 StandardError=journal
+SyslogIdentifier=cockpit-oscap-scan
+TimeoutStartSec=4h
+# keep scheduled scans from competing with the system's real workload
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
