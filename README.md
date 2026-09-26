@@ -28,8 +28,9 @@ scheduled scans.
 
 - **Overview** – the latest compliance score, the change since the previous
   scan and a score trend across the last scans of the profile, the rules that
-  need attention grouped by severity, the active profile and the state of
-  scheduled scanning at a glance.
+  need attention (each linking straight to its details), the active profile
+  and the state of scheduled scanning at a glance. Cockpit's navigation flags
+  the page when the last scan failed or the score is poor.
 - **Profiles** – every profile in the SCAP content installed on the system,
   with the OS matched automatically (Fedora, RHEL and derivatives, Debian,
   Ubuntu, openSUSE/SLE, Amazon Linux). Pick the active profile or choose
@@ -39,14 +40,17 @@ scheduled scans.
   rules by category, shows their description, rationale and references, and
   saves a standard XCCDF tailoring file. Tailoring files can be imported from
   and exported to SCAP Workbench.
-- **Scanning** – run a scan from any page and follow live progress; scans
-  started by the scheduler show the same progress banner. Results are stored
-  as ARF plus a JSON summary and pruned to a configurable number.
+- **Scanning** – run a scan from any page and follow live progress with a
+  remaining-time estimate; scans started by the scheduler show the same
+  progress banner. Results are stored as ARF plus a JSON summary and pruned
+  to a configurable number.
 - **Results** – sortable history, per-rule results with on-demand details and
   scanner messages, filters by result, severity and category, and a comparison
   with the previous scan of the same profile (new failures, rules now passing).
-  Every scan offers its HTML report, ARF results, and the remediation for its
-  failed rules as a Bash script or an Ansible playbook.
+  Every scan offers its HTML report, ARF results, a CSV of its rule results,
+  and the remediation for its failed rules as a Bash script or an Ansible
+  playbook. Results can be deleted one at a time or in bulk, and a link can
+  point at one rule of one scan.
 - **Guided remediation** – review the bash fix generated for each failed rule,
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),

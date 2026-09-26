@@ -75,7 +75,8 @@ class TestOscap(testlib.MachineCase):
         # and would write its result after the restore.
         self.restore_dir("/var/lib/cockpit-oscap")
         self.addCleanup(self.machine.execute,
-                        "pkill -x oscap || true; for i in $(seq 40); do pgrep -x oscap >/dev/null || break; sleep 0.5; done; sleep 1")
+                        "pkill -x oscap || true; "
+                        "for i in $(seq 40); do pgrep -x oscap >/dev/null || break; sleep 0.5; done; sleep 1")
 
         self.login_and_go("/oscap")
         b.wait_visible("#oscap-tabs")

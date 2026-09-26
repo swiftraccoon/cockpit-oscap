@@ -84,6 +84,10 @@ jobs:
     container:
       image: fedora:latest
     steps:
+      # git first, so the checkout is a real repository and `git describe` versions the build
+      - name: Install git
+        run: dnf install -y --setopt=install_weak_deps=False git-core
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -91,7 +95,7 @@ jobs:
       - name: Install build tools
         run: >
           dnf install -y --setopt=install_weak_deps=False
-          git-core make nodejs npm rpm-build gettext libappstream-glib systemd-rpm-macros
+          make nodejs npm rpm-build gettext libappstream-glib systemd-rpm-macros
           python3 xz tar dnf5-plugins
 
       - name: Pacify git's permission check
@@ -109,4 +113,4 @@ jobs:
         run: make rpm
 
       - name: List package contents
-        run: rpm -qlp output/noarch/*.rpm
+        run: rpm -qlp ./*.noarch.rpm

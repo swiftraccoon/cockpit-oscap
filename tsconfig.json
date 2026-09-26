@@ -18,7 +18,8 @@
     "noEmit": true,
     "strict": true,
     "target": "es2022",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": []
   },
   "include": [
     "src/**/*"

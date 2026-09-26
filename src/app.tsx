@@ -58,6 +58,8 @@ const Shell = ({ children }: { children: React.ReactNode }) => (
 export interface AppContextValue {
     backend: BackendInfo;
     reloadBackend: () => void;
+    /** Scan summaries as last listed by the shell (newest first), or null before the first listing. */
+    results: ResultSummary[] | null;
     /** Incremented whenever results or configuration change; pages reload when it does. */
     version: number;
     bump: () => void;
@@ -108,6 +110,7 @@ const AppShell = () => {
     const superuserAllowed = useSuperuser();
     const scanState = useScanState();
     const [version, setVersion] = useState(0);
+    const [summaries, setSummaries] = useState<ResultSummary[] | null>(null);
     // Reload everything. Calls within a short window collapse into one reload: a finished scan
     // is reported both by the dialog that ran it and by the scan-state file watch.
     const bumpTimer = useRef<number | null>(null);
@@ -122,13 +125,20 @@ const AppShell = () => {
 
     const scanning = Boolean(scanState?.running);
 
-    // Refresh everything when a scan (interactive or scheduled) finishes
+    // Refresh everything when a scan (interactive or scheduled) finishes, also when it ended
+    // before the file watch ever showed it running (a scheduled scan that failed at once)
+    const scanStatus = scanState?.status;
     const wasScanning = useRef(false);
+    const lastStatus = useRef<string | undefined>(undefined);
     useEffect(() => {
-        if (wasScanning.current && !scanning)
-            bump();
+        const ended = wasScanning.current && !scanning;
+        const changed = lastStatus.current !== undefined && lastStatus.current !== scanStatus;
         wasScanning.current = scanning;
-    }, [scanning, bump]);
+        if (scanStatus !== undefined)
+            lastStatus.current = scanStatus;
+        if (!scanning && (ended || changed))
+            bump();
+    }, [scanning, scanStatus, bump]);
 
     // The former "scan" page became a dialog; keep old links working
     useEffect(() => {
@@ -139,38 +149,44 @@ const AppShell = () => {
     const runScan = useCallback((profileId?: string) => {
         if (Dialogs.isActive())
             return;
-        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} onFinished={bump} />);
-    }, [Dialogs, bump]);
+        Dialogs.show(<ScanDialog {...profileId && { initialProfileId: profileId }} results={summaries} onFinished={bump} />);
+    }, [Dialogs, bump, summaries]);
 
     const info = backend.data;
 
     // Flag a failed scan or a poor score in Cockpit's navigation (the manifest preloads this page,
     // so the icon appears without visiting it). Keyed on reloads and scan-state transitions only,
     // not on every progress write.
-    // (a finished scan bumps `version`; keying on `scanning` too would spawn the bridge twice)
-    const scanStatus = scanState?.status;
-    const scanningRef = useRef(scanning);
-    scanningRef.current = scanning;
+    // Every change of results or scan state ends up as a `version` bump (coalesced), so keying on
+    // it means one bridge call per change. The summaries are shared through the context.
+    const scanRef = useRef({ scanning, scanStatus });
+    scanRef.current = { scanning, scanStatus };
     useEffect(() => {
-        if (!info || !info.oscap || !info.content.present || scanningRef.current)
+        if (!info || !info.oscap || !info.content.present || scanRef.current.scanning)
             return undefined;
         let cancelled = false;
         listResults()
-                .then(results => { if (!cancelled) page_status.set_own(complianceStatus(results, scanStatus)); })
+                .then(results => {
+                    if (cancelled)
+                        return;
+                    setSummaries(results);
+                    page_status.set_own(complianceStatus(results, scanRef.current.scanStatus));
+                })
                 .catch(() => { if (!cancelled) page_status.set_own(null); });
         return () => { cancelled = true };
-    }, [info, version, scanStatus]);
+    }, [info, version]);
     const context = useMemo<AppContextValue | null>(() => info
         ? {
             backend: info,
             reloadBackend: backend.reload,
+            results: summaries,
             version,
             bump,
             superuser: superuserAllowed,
             scanning,
             runScan,
         }
-        : null, [info, backend.reload, version, bump, superuserAllowed, scanning, runScan]);
+        : null, [info, backend.reload, summaries, version, bump, superuserAllowed, scanning, runScan]);
 
     if (!context || !info) {
         return (

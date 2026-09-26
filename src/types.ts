@@ -310,8 +310,10 @@ export interface RemediationRun {
     timestamp: string;
     result_id: string;
     script_path: string;
-    /** null for scripts from before the audit record existed. */
+    /** null while a run is in progress or was interrupted, and for scripts from before the audit record. */
     success: boolean | null;
+    /** Rules the run set out to apply. */
+    planned: number;
     applied: number;
     failed: number;
     rules: RuleRemediation[];

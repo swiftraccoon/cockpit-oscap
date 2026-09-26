@@ -20,7 +20,7 @@ import { FormHelper } from "cockpit-components-form-helper";
 import { SimpleSelect } from "cockpit-components-simple-select";
 import { useDialogs } from "dialogs";
 
-import { getConfig, listProfiles, listResults, scan } from "../api";
+import { getConfig, listProfiles, scan } from "../api";
 import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
 import { errorMessage, formatDuration, ruleShortName } from "../helpers";
@@ -33,18 +33,17 @@ const _ = cockpit.gettext;
 
 type Phase = "setup" | "running" | "done" | "error";
 
-export const ScanDialog = ({ initialProfileId, onFinished }: {
+export const ScanDialog = ({ initialProfileId, results, onFinished }: {
     initialProfileId?: string;
+    /** Scan summaries known to the shell, for "the last scan of this profile took ..." (dialogs render
+     *  outside the application context, so they are handed in). */
+    results?: ResultSummary[] | null;
     onFinished?: (result: ScanResult) => void;
 }) => {
     const Dialogs = useDialogs();
     const setup = useAsync(async () => {
-        const [profiles, config, results] = await Promise.all([
-            listProfiles(),
-            getConfig(),
-            listResults().catch((): ResultSummary[] => []),
-        ]);
-        return { profiles, config, results };
+        const [profiles, config] = await Promise.all([listProfiles(), getConfig()]);
+        return { profiles, config };
     }, []);
 
     const [phase, setPhase] = useState<Phase>("setup");
@@ -67,7 +66,7 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
 
     const profiles: ProfileInfo[] = setup.data?.profiles ?? [];
     const profile = profiles.find(p => p.id === profileId);
-    const lastScan = (setup.data?.results ?? []).find(r => r.status === "complete" && r.base_profile_id === profileId &&
+    const lastScan = (results ?? []).find(r => r.status === "complete" && r.base_profile_id === profileId &&
         r.duration_seconds > 0);
     const lastDuration = lastScan ? lastScan.duration_seconds : null;
 

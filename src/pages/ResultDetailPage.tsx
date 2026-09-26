@@ -5,7 +5,7 @@
  * the entry point to guided remediation.
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Card, CardBody, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
@@ -107,7 +107,21 @@ async function findPrevious(result: ScanResult, summaries: ResultSummary[]): Pro
     }
 }
 
-const RemediationHistory = ({ runs, onError }: { runs: RemediationRun[]; onError: (message: string) => void }) => {
+function runOutcome(run: RemediationRun): React.ReactNode {
+    if (run.success === true)
+        return <Label status="success" isCompact>{_("All fixes applied")}</Label>;
+    if (run.success === false)
+        return <Label status="danger" isCompact>{cockpit.format(cockpit.ngettext("$0 fix failed", "$0 fixes failed", run.failed), run.failed)}</Label>;
+    if (run.rules.length > 0 && run.rules.length < run.planned)
+        return <Label status="warning" isCompact>{cockpit.format(_("Interrupted after $0 of $1"), run.rules.length, run.planned)}</Label>;
+    return <Label color="grey" isCompact>{_("Outcome not recorded")}</Label>;
+}
+
+const RemediationHistory = ({ runs, readOnly, onError }: {
+    runs: RemediationRun[];
+    readOnly: boolean;
+    onError: (message: string) => void;
+}) => {
     async function downloadScript(run: RemediationRun) {
         try {
             downloadFile(`${safeFilename(run.id)}.sh`, await readFile(run.script_path), "text/x-shellscript");
@@ -128,20 +142,17 @@ const RemediationHistory = ({ runs, onError }: { runs: RemediationRun[]; onError
                         props: { key: run.id },
                         columns: [
                             { title: <When iso={run.timestamp} fallback={run.timestamp} /> },
+                            { title: runOutcome(run) },
+                            { title: cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", run.planned), run.planned) },
                             {
-                                title: run.success === null
-                                    ? <Label color="grey" isCompact>{_("Outcome not recorded")}</Label>
-                                    : run.success
-                                        ? <Label status="success" isCompact>{_("All fixes applied")}</Label>
-                                        : <Label status="danger" isCompact>{cockpit.format(cockpit.ngettext("$0 fix failed", "$0 fixes failed", run.failed), run.failed)}</Label>,
-                            },
-                            { title: cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", run.applied + run.failed), run.applied + run.failed) },
-                            {
-                                title: (
-                                    <Button variant="link" isInline onClick={() => downloadScript(run)}>
-                                        {_("Download script")}
-                                    </Button>
-                                ),
+                                // the script is root-only (0700): nothing to offer without administrative access
+                                title: readOnly
+                                    ? null
+                                    : (
+                                        <Button variant="link" isInline onClick={() => downloadScript(run)}>
+                                            {_("Download script")}
+                                        </Button>
+                                    ),
                                 props: { className: "pf-v6-c-table__action" },
                             },
                         ],
@@ -171,14 +182,21 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
     const [severity, setSeverity] = useState("all");
     const [group, setGroup] = useState("all");
     const [error, setError] = useState<string | null>(null);
-    const [expandedRules, setExpandedRules] = useState<RowRecord>(() => (focusRule ? { [focusRule]: true } : {}));
+    const [expandedRules, setExpandedRules] = useState<RowRecord>({});
 
     const result = data.data?.result ?? null;
     const previous = data.data?.previous ?? null;
     const remediations = data.data?.remediations ?? [];
+    // Once per deep link: expand the rule through the table's own toggle (its expansion state is
+    // internal) and bring it into view
+    const focused = useRef<string | null>(null);
     useEffect(() => {
-        if (focusRule && result)
-            document.getElementById(`rule-${focusRule}`)?.scrollIntoView({ block: "center" });
+        if (!focusRule || !result || focused.current === focusRule)
+            return;
+        focused.current = focusRule;
+        const row = document.getElementById(`rule-${focusRule}`);
+        row?.querySelector<HTMLButtonElement>("td.pf-v6-c-table__toggle button")?.click();
+        row?.scrollIntoView({ block: "center" });
     }, [focusRule, result]);
     const groups = useMemo(() => {
         const names = new Set<string>();
@@ -258,11 +276,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
         );
     }
 
-    const shown = result.results.filter(rule => rule.rule_id === focusRule || (
+    const shown = result.results.filter(rule =>
         (status === "changed" ? changeOf(rule) !== null : matchesStatus(status, rule.result)) &&
         (severity === "all" || normalizeSeverity(rule.severity) === severity) &&
         (group === "all" || (rule.group || "") === group) &&
-        matchesSearch(search, rule.title, rule.rule_id, rule.group)));
+        matchesSearch(search, rule.title, rule.rule_id, rule.group));
     const byId = new Map(shown.map(r => [r.rule_id, r]));
 
     const statusCount = (filter: StatusFilter) =>
@@ -438,7 +456,7 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                     </StackItem>
                     {remediations.length > 0 && (
                         <StackItem>
-                            <RemediationHistory runs={remediations} onError={setError} />
+                            <RemediationHistory runs={remediations} readOnly={readOnly} onError={setError} />
                         </StackItem>
                     )}
                     {result.status === "interrupted" && (
@@ -523,15 +541,11 @@ key="fix-ansible" isDisabled={!result.arf_path || result.counts.fail === 0}
                             sortMethod={sortMethod}
                             emptyCaption={_("No rules match the current filters")}
                             isEmptyStateInTable
-                            onExpand={rows => setExpandedRules(prev => ({
-                                ...focusRule && { [focusRule]: prev[focusRule] ?? true },
-                                ...rows,
-                            }))}
+                            onExpand={setExpandedRules}
                             rows={shown.map(rule => {
                                 const change = changeOf(rule);
                                 return {
                                     props: { key: rule.rule_id, id: `rule-${rule.rule_id}` },
-                                    initiallyExpanded: rule.rule_id === focusRule,
                                     columns: [
                                         { title: <ResultLabel result={rule.result} />, props: { className: "oscap-table-nowrap" } },
                                         {

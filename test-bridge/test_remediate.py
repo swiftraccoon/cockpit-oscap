@@ -176,7 +176,8 @@ def test_generate_fix_without_arf(bridge):
         bridge.generate_fix(bridge._load_result(result_id))
 
 
-def test_remediate_runs_each_rule_separately(bridge, monkeypatch, capsys):
+def _apply_two_fixes(bridge, monkeypatch, capsys):
+    """Remediate a seeded result with one succeeding and one failing fix; return (result id, output lines)."""
     result_id = _seed_result(bridge)
     snippets = {
         RULE_AUDIT: "echo applied-audit",
@@ -187,11 +188,16 @@ def test_remediate_runs_each_rule_separately(bridge, monkeypatch, capsys):
     def fake_generate_fix(_result):
         rules = [bridge.FixRuleInfo(id=rid, title="", fix_snippet=snippet, risk_level="low", risk_reason="",
                                     has_fix="MISSING" not in snippet) for rid, snippet in snippets.items()]
-        return bridge.FixInfo(result_id=result_id, script="", rules=rules)
+        return bridge.FixInfo(result_id=result_id, fix_type="bash", script="", rules=rules)
 
     monkeypatch.setattr(bridge, "generate_fix", fake_generate_fix)
     bridge.cmd_remediate([result_id, "--rules", json.dumps([RULE_AUDIT, RULE_ROOT_LOGIN])])
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    return result_id, lines
+
+
+def test_remediate_runs_each_rule_separately(bridge, monkeypatch, capsys):
+    result_id, lines = _apply_two_fixes(bridge, monkeypatch, capsys)
     assert [line["type"] for line in lines] == ["progress", "progress", "done"]
     outcome = lines[-1]["result"]
     assert outcome["success"] is False
@@ -204,29 +210,56 @@ def test_remediate_runs_each_rule_separately(bridge, monkeypatch, capsys):
     assert "echo applied-audit" in script.read_text()
     assert oct(script.stat().st_mode & 0o777) == "0o700"
 
+    with pytest.raises(bridge.BridgeError, match="no remediation is available"):
+        bridge.remediate(bridge._load_result(result_id), [RULE_TIMEOUT])
+    with pytest.raises(bridge.BridgeError, match="no remediation is available"):
+        bridge.remediate(bridge._load_result(result_id), ["xccdf_org.test.content_rule_nope"])
+
+
+def test_remediation_history(bridge, monkeypatch, capsys):
+    result_id, lines = _apply_two_fixes(bridge, monkeypatch, capsys)
+    script = bridge.Path(lines[-1]["result"]["script_path"])
     # the audit record next to the script, and the history built from it
-    record = json.loads(script.with_suffix(".json").read_text())
+    record_path = script.with_suffix(".json")
+    record = json.loads(record_path.read_text())
+    assert oct(record_path.stat().st_mode & 0o777) == "0o600"
     assert record["success"] is False
+    assert record["planned"] == 2
     assert record["timestamp"].endswith("+00:00")
     assert [r["rule_id"] for r in record["rules"]] == [RULE_AUDIT, RULE_ROOT_LOGIN]
     runs = bridge.list_remediations(result_id)
     assert len(runs) == 1
     assert runs[0]["result_id"] == result_id
     assert runs[0]["script_path"] == str(script)
-    assert (runs[0]["success"], runs[0]["applied"], runs[0]["failed"]) == (False, 1, 1)
+    assert (runs[0]["success"], runs[0]["planned"], runs[0]["applied"], runs[0]["failed"]) == (False, 2, 1, 1)
     assert bridge.list_remediations("2026-01-01T000000-other") == []
     # a script from before the audit record existed still shows up, with an unknown outcome
     legacy = bridge.REMEDIATION_DIR / "2026-01-01T000000-2026-04-08T025531-base.sh"
     legacy.write_text("#!/usr/bin/env bash\n# --- a ---\necho a\n# --- b ---\necho b\n")
+    # an interrupted run: the record was written after the first rule and never finished
+    partial = bridge.REMEDIATION_DIR / "2026-02-01T000000-2026-04-08T025531-base.sh"
+    partial.write_text("#!/usr/bin/env bash\n")
+    partial.with_suffix(".json").write_text(json.dumps({
+        "timestamp": "2026-02-01T00:00:00+00:00", "planned": 3, "success": None,
+        "rules": [{"rule_id": RULE_AUDIT, "success": True, "exit_status": 0, "output": "", "errors": ""}]}))
+    # a malformed record does not take the listing down
+    broken = bridge.REMEDIATION_DIR / "2026-03-01T000000-2026-04-08T025531-base.sh"
+    broken.write_text("#!/usr/bin/env bash\n")
+    broken.with_suffix(".json").write_text(json.dumps({"rules": [{"exit_status": "n/a"}], "success": True}))
     runs = bridge.list_remediations(result_id)
-    assert [r["id"] for r in runs] == [script.stem, legacy.stem]  # newest first
-    assert (runs[1]["success"], runs[1]["applied"], runs[1]["failed"]) == (None, 2, 0)
-    assert runs[1]["timestamp"] == "2026-01-01T00:00:00+00:00"
-
-    with pytest.raises(bridge.BridgeError, match="no remediation is available"):
-        bridge.remediate(bridge._load_result(result_id), [RULE_TIMEOUT])
-    with pytest.raises(bridge.BridgeError, match="no remediation is available"):
-        bridge.remediate(bridge._load_result(result_id), ["xccdf_org.test.content_rule_nope"])
+    assert [r["id"] for r in runs] == [script.stem, broken.stem, partial.stem, legacy.stem]  # newest first
+    assert (runs[1]["success"], runs[1]["planned"], runs[1]["applied"]) == (None, 0, 0)
+    assert (runs[2]["success"], runs[2]["planned"], runs[2]["applied"], runs[2]["failed"]) == (None, 3, 1, 0)
+    assert (runs[3]["success"], runs[3]["planned"], runs[3]["applied"], runs[3]["failed"]) == (None, 2, 0, 0)
+    assert runs[3]["timestamp"] == "2026-01-01T00:00:00+00:00"
+    # deleting the scan takes its runs along; other scans' runs stay
+    other = bridge.REMEDIATION_DIR / "2026-04-01T000000-2026-04-08T030000-other.sh"
+    other.write_text("#!/usr/bin/env bash\n")
+    bridge.cmd_delete_result([result_id])
+    assert not script.exists()
+    assert not record_path.exists()
+    assert not legacy.exists()
+    assert other.exists()
 
 
 def test_remediate_argument_validation(run_bridge, bridge):
