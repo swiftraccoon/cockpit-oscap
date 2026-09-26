@@ -1,309 +1,204 @@
-"""Tests for the manage-timer command."""
+"""Scheduled scan timer management."""
+# mypy: disallow-untyped-defs=false, disallow-untyped-decorators=false, disallow-untyped-calls=false
+
 from __future__ import annotations
 
-import importlib.util
 import json
-import pathlib
-from unittest.mock import patch
 
 import pytest
 
-BRIDGE_PATH = pathlib.Path(__file__).resolve().parent.parent / "src" / "oscap-bridge.py"
-
 TIMER_UNIT = "cockpit-oscap-scan.timer"
+SERVICE_UNIT = "cockpit-oscap-scan.service"
+
+TIMER_ACTIVE = (
+    "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n"
+    "NextElapseUSecRealtime=Thu 2026-03-26 00:00:00 UTC\nLastTriggerUSec=Thu 2026-03-19 00:00:00 UTC\n"
+    "TimersCalendar={ OnCalendar=weekly ; next_elapse=Thu 2026-03-26 00:00:00 UTC }\n"
+)
+TIMER_INACTIVE = ("LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"
+                  "NextElapseUSecRealtime=n/a\nLastTriggerUSec=\n")
+TIMER_MISSING = ("LoadState=not-found\nActiveState=inactive\nUnitFileState=\n"
+                 "NextElapseUSecRealtime=\nLastTriggerUSec=\n")
+SERVICE_IDLE = "ActiveState=inactive\nResult=success\nExecMainExitTimestamp=Thu 2026-03-19 00:05:12 UTC\n"
 
 
-@pytest.fixture
-def bridge_module():
-    """Import oscap-bridge as a module for direct function testing."""
-    spec = importlib.util.spec_from_file_location("oscap_bridge", str(BRIDGE_PATH))
-    assert spec is not None
-    assert spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _fake_systemctl(responses):
+    """Return a run_cmd stand-in answering `systemctl show <unit>` from a dict and recording other calls."""
+    calls = []
+
+    def run_cmd(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["systemctl", "show"]:
+            return 0, responses.get(argv[2], ""), ""
+        if argv[0] == "systemctl":
+            return responses.get(" ".join(argv[1:]), (0, "", ""))
+        return 0, "", ""
+
+    return run_cmd, calls
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: status action
-# ---------------------------------------------------------------------------
+def test_status_active(bridge, monkeypatch, capsys):
+    run_cmd, _calls = _fake_systemctl({TIMER_UNIT: TIMER_ACTIVE, SERVICE_UNIT: SERVICE_IDLE})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    bridge.cmd_manage_timer(["status"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "active"
+    assert data["enabled"] is True
+    assert data["installed"] is True
+    assert data["next_run"] == "2026-03-26T00:00:00+00:00"
+    assert data["last_run"] == "2026-03-19T00:00:00+00:00"
+    assert data["calendar"] == "weekly"
+    assert data["service_state"] == "inactive"
+    assert data["service_result"] == "success"
+    assert data["last_scan_finished"] == "2026-03-19T00:05:12+00:00"
 
 
-class TestManageTimerStatus:
-    """Test manage-timer status action."""
+def test_status_inactive_and_missing(bridge, monkeypatch):
+    run_cmd, _calls = _fake_systemctl({TIMER_UNIT: TIMER_INACTIVE, SERVICE_UNIT: SERVICE_IDLE})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    status = bridge.get_timer_status()
+    assert status["status"] == "inactive"
+    assert status["enabled"] is False
+    assert status["next_run"] == ""
 
-    def test_status_active_timer(self, bridge_module, capsys):
-        """status returns active state, next_run, and frequency."""
-        mock_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Thu 2026-03-26 00:00:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with patch.object(bridge_module, "run_cmd", return_value=(0, mock_output, "")):
-            bridge_module.cmd_manage_timer(["status"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "active"
-        assert data["next_run"] == "Thu 2026-03-26 00:00:00 UTC"
-        assert "frequency" in data
-
-    def test_status_inactive_timer(self, bridge_module, capsys):
-        """status returns inactive when timer is stopped."""
-        mock_output = (
-            "ActiveState=inactive\n"
-            "NextElapseUSecRealtime=n/a\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with patch.object(bridge_module, "run_cmd", return_value=(0, mock_output, "")):
-            bridge_module.cmd_manage_timer(["status"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "inactive"
-        assert data["next_run"] == ""
-
-    def test_status_not_found(self, bridge_module, capsys):
-        """status returns not-found when unit does not exist."""
-        mock_output = "ActiveState=inactive\nNextElapseUSecRealtime=\nDescription=\n"
-        with patch.object(
-            bridge_module, "run_cmd",
-            return_value=(4, mock_output, "Unit cockpit-oscap-scan.timer not found."),
-        ):
-            bridge_module.cmd_manage_timer(["status"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "not-found"
+    run_cmd, _calls = _fake_systemctl({TIMER_UNIT: TIMER_MISSING, SERVICE_UNIT: ""})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    status = bridge.get_timer_status()
+    assert status["status"] == "not-found"
+    assert status["installed"] is False
+    assert status["calendar"] == ""
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: enable action
-# ---------------------------------------------------------------------------
+def test_status_reads_calendar_override(bridge, monkeypatch, tmp_path):
+    override_dir = tmp_path / "timer.d"
+    override_dir.mkdir()
+    (override_dir / "override.conf").write_text("[Timer]\nOnCalendar=\nOnCalendar=Mon *-*-* 02:30:00\n")
+    monkeypatch.setattr(bridge, "TIMER_OVERRIDE_DIR", override_dir)
+    run_cmd, _calls = _fake_systemctl({TIMER_UNIT: TIMER_ACTIVE, SERVICE_UNIT: SERVICE_IDLE})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    assert bridge.get_timer_status()["calendar"] == "Mon *-*-* 02:30:00"
 
 
-class TestManageTimerEnable:
-    """Test manage-timer enable action."""
-
-    def test_enable_succeeds(self, bridge_module, capsys):
-        """enable calls systemctl enable --now and returns status."""
-        status_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Thu 2026-03-26 00:00:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with patch.object(
-            bridge_module, "run_cmd",
-            side_effect=[
-                (0, "", ""),           # enable --now
-                (0, status_output, ""),  # status query
-            ],
-        ):
-            bridge_module.cmd_manage_timer(["enable"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "active"
-
-    def test_enable_failure(self, bridge_module, capsys):
-        """enable returns error on systemctl failure."""
-        with (
-            patch.object(bridge_module, "run_cmd", return_value=(1, "", "Failed to enable unit")),
-            pytest.raises(SystemExit),
-        ):
-            bridge_module.cmd_manage_timer(["enable"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert "error" in data
+@pytest.mark.parametrize(("value", "expected"), [
+    ("Thu 2026-03-26 00:00:00 UTC", "2026-03-26T00:00:00+00:00"),
+    ("2026-03-26 00:00:00 UTC", "2026-03-26T00:00:00+00:00"),
+    ("n/a", ""),
+    ("", ""),
+    ("0", ""),
+    ("garbage", "garbage"),
+])
+def test_parse_systemd_time(bridge, value, expected):
+    assert bridge._parse_systemd_time(value) == expected
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: disable action
-# ---------------------------------------------------------------------------
+def test_parse_systemd_local_time_is_aware(bridge):
+    iso = bridge._parse_systemd_time("Thu 2026-03-26 01:02:03 CET")
+    assert iso.startswith("2026-03-26T01:02:03")
+    assert iso[-6] in "+-"
 
 
-class TestManageTimerDisable:
-    """Test manage-timer disable action."""
-
-    def test_disable_succeeds(self, bridge_module, capsys):
-        """disable calls systemctl disable --now and returns status."""
-        status_output = (
-            "ActiveState=inactive\n"
-            "NextElapseUSecRealtime=n/a\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with patch.object(
-            bridge_module, "run_cmd",
-            side_effect=[
-                (0, "", ""),           # disable --now
-                (0, status_output, ""),  # status query
-            ],
-        ):
-            bridge_module.cmd_manage_timer(["disable"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "inactive"
+@pytest.mark.parametrize(("config", "expected"), [
+    ({"frequency": "daily", "time": "03:00"}, "*-*-* 03:00:00"),
+    ({"frequency": "daily", "time": "3:5"}, "*-*-* 03:05:00"),
+    ({"frequency": "daily"}, "*-*-* 03:00:00"),
+    ({"frequency": "weekly", "day": "Mon", "time": "02:30"}, "Mon *-*-* 02:30:00"),
+    ({"frequency": "weekly", "day": "friday", "time": "22:15"}, "Fri *-*-* 22:15:00"),
+    ({"frequency": "weekly"}, "Mon *-*-* 03:00:00"),
+    ({"frequency": "monthly", "day": "1", "time": "03:00"}, "*-*-01 03:00:00"),
+    ({"frequency": "monthly", "day": 15, "time": "04:00"}, "*-*-15 04:00:00"),
+    ({"frequency": "monthly"}, "*-*-01 03:00:00"),
+])
+def test_build_on_calendar(bridge, config, expected):
+    assert bridge.build_on_calendar(config) == expected
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: configure action
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("config", [
+    {"frequency": "hourly"},
+    {"frequency": "daily", "time": "25:00"},
+    {"frequency": "daily", "time": "noon"},
+    {"frequency": "weekly", "day": "Someday"},
+    {"frequency": "monthly", "day": "31"},
+    {"frequency": "monthly", "day": "first"},
+    {"frequency": "custom"},
+])
+def test_build_on_calendar_rejects(bridge, config, monkeypatch):
+    monkeypatch.setattr(bridge.shutil, "which", lambda _name: None)
+    with pytest.raises(bridge.BridgeError):
+        bridge.build_on_calendar(config)
 
 
-class TestManageTimerConfigure:
-    """Test manage-timer configure action."""
+def test_custom_calendar_uses_systemd_analyze(bridge, monkeypatch):
+    def run_cmd(argv, **_kwargs):
+        if argv[-1] == "*-*-1..7 04:00:00":
+            return 0, ("  Original form: *-*-1..7 04:00:00\nNormalized form: *-*-01..07 04:00:00\n"
+                       "    Next elapse: Thu 2026-10-01 04:00:00 UTC\n"), ""
+        return 1, "", "Failed to parse calendar specification 'bogus': Invalid argument"
 
-    def test_configure_weekly(self, bridge_module, capsys, tmp_path):
-        """configure writes drop-in override and reloads daemon."""
-        override_dir = tmp_path / "cockpit-oscap-scan.timer.d"
-        config_json = json.dumps({"frequency": "weekly"})
-
-        status_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Thu 2026-03-26 00:00:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with (
-            patch.object(bridge_module, "_TIMER_OVERRIDE_DIR", override_dir),
-            patch.object(bridge_module, "run_cmd", side_effect=[
-                (0, "", ""),           # daemon-reload
-                (0, status_output, ""),  # status query
-            ]),
-        ):
-            bridge_module.cmd_manage_timer(["configure", config_json])
-
-        # Verify the override file was written
-        override_file = override_dir / "override.conf"
-        assert override_file.exists()
-        content = override_file.read_text()
-        assert "[Timer]" in content
-        assert "OnCalendar=weekly" in content
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["status"] == "active"
-
-    def test_configure_daily_at_time(self, bridge_module, tmp_path):
-        """configure with day and time produces correct OnCalendar value."""
-        override_dir = tmp_path / "cockpit-oscap-scan.timer.d"
-        config_json = json.dumps({"frequency": "daily", "time": "03:00"})
-
-        status_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Fri 2026-03-20 03:00:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with (
-            patch.object(bridge_module, "_TIMER_OVERRIDE_DIR", override_dir),
-            patch.object(bridge_module, "run_cmd", side_effect=[
-                (0, "", ""),
-                (0, status_output, ""),
-            ]),
-        ):
-            bridge_module.cmd_manage_timer(["configure", config_json])
-
-        override_file = override_dir / "override.conf"
-        content = override_file.read_text()
-        assert "OnCalendar=*-*-* 03:00:00" in content
-
-    def test_configure_weekly_with_day_and_time(self, bridge_module, tmp_path):
-        """configure with frequency=weekly, day, and time."""
-        override_dir = tmp_path / "cockpit-oscap-scan.timer.d"
-        config_json = json.dumps({"frequency": "weekly", "day": "Mon", "time": "02:30"})
-
-        status_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Mon 2026-03-23 02:30:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with (
-            patch.object(bridge_module, "_TIMER_OVERRIDE_DIR", override_dir),
-            patch.object(bridge_module, "run_cmd", side_effect=[
-                (0, "", ""),
-                (0, status_output, ""),
-            ]),
-        ):
-            bridge_module.cmd_manage_timer(["configure", config_json])
-
-        override_file = override_dir / "override.conf"
-        content = override_file.read_text()
-        assert "OnCalendar=Mon *-*-* 02:30:00" in content
-
-    def test_configure_updates_active_profile(self, bridge_module, tmp_path):
-        """configure with profile_id updates config.json active_profile."""
-        override_dir = tmp_path / "cockpit-oscap-scan.timer.d"
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        config_path = data_dir / "config.json"
-
-        config_json = json.dumps({
-            "frequency": "weekly",
-            "profile_id": "xccdf_org.ssgproject.content_profile_ospp",
-        })
-
-        status_output = (
-            "ActiveState=active\n"
-            "NextElapseUSecRealtime=Thu 2026-03-26 00:00:00 UTC\n"
-            "Description=Scheduled OpenSCAP Compliance Scan\n"
-        )
-        with (
-            patch.object(bridge_module, "_TIMER_OVERRIDE_DIR", override_dir),
-            patch.object(bridge_module, "CONFIG_PATH", config_path),
-            patch.object(bridge_module, "run_cmd", side_effect=[
-                (0, "", ""),
-                (0, status_output, ""),
-            ]),
-        ):
-            bridge_module.cmd_manage_timer(["configure", config_json])
-
-        # Verify config.json was updated
-        assert config_path.exists()
-        saved = json.loads(config_path.read_text())
-        assert saved["active_profile"] == "xccdf_org.ssgproject.content_profile_ospp"
-
-    def test_configure_missing_json(self, bridge_module, capsys):
-        """configure without config_json arg returns an error."""
-        with pytest.raises(SystemExit):
-            bridge_module.cmd_manage_timer(["configure"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert "error" in data
-
-    def test_configure_invalid_json(self, bridge_module, capsys):
-        """configure with invalid JSON returns an error."""
-        with pytest.raises(SystemExit):
-            bridge_module.cmd_manage_timer(["configure", "not-json"])
-
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert "error" in data
+    monkeypatch.setattr(bridge.shutil, "which", lambda _name: "/usr/bin/systemd-analyze")
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    assert bridge.build_on_calendar({"frequency": "custom", "calendar": "*-*-1..7 04:00:00"}) == "*-*-01..07 04:00:00"
+    check = bridge.validate_calendar("*-*-1..7 04:00:00")
+    assert check == {"valid": True, "normalized": "*-*-01..07 04:00:00", "next_elapse": "2026-10-01T04:00:00+00:00",
+                     "error": ""}
+    check = bridge.validate_calendar("bogus")
+    assert check["valid"] is False
+    assert "Invalid argument" in check["error"]
+    with pytest.raises(bridge.BridgeError, match="Invalid argument"):
+        bridge.build_on_calendar({"frequency": "custom", "calendar": "bogus"})
+    assert bridge.validate_calendar("")["valid"] is False
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: unknown action / missing action
-# ---------------------------------------------------------------------------
+def test_validate_calendar_without_systemd_analyze(bridge, monkeypatch):
+    monkeypatch.setattr(bridge.shutil, "which", lambda _name: None)
+    assert bridge.validate_calendar(" weekly ")["normalized"] == "weekly"
 
 
-class TestManageTimerEdgeCases:
-    """Test manage-timer edge cases."""
+def test_configure_writes_override_and_profile(bridge, monkeypatch, tmp_path, capsys):
+    override_dir = tmp_path / "timer.d"
+    monkeypatch.setattr(bridge, "TIMER_OVERRIDE_DIR", override_dir)
+    run_cmd, calls = _fake_systemctl({TIMER_UNIT: TIMER_ACTIVE, SERVICE_UNIT: SERVICE_IDLE})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    config = {"frequency": "weekly", "day": "Mon", "time": "02:30",
+              "profile_id": "xccdf_org.test.content_profile_base"}
+    bridge.cmd_manage_timer(["configure", json.dumps(config)])
 
-    def test_missing_action(self, bridge_module, capsys):
-        """manage-timer with no action returns an error."""
-        with pytest.raises(SystemExit):
-            bridge_module.cmd_manage_timer([])
+    content = (override_dir / "override.conf").read_text()
+    assert "[Timer]" in content
+    assert "OnCalendar=\nOnCalendar=Mon *-*-* 02:30:00\n" in content
+    assert bridge.load_config()["active_profile"] == "xccdf_org.test.content_profile_base"
+    assert ["systemctl", "daemon-reload"] in calls
+    assert ["systemctl", "restart", TIMER_UNIT] in calls  # active timer picks up the new schedule
+    assert json.loads(capsys.readouterr().out)["status"] == "active"
 
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert "error" in data
 
-    def test_unknown_action(self, bridge_module, capsys):
-        """manage-timer with unknown action returns an error."""
-        with pytest.raises(SystemExit):
-            bridge_module.cmd_manage_timer(["restart"])
+def test_configure_errors(bridge, monkeypatch, tmp_path):
+    monkeypatch.setattr(bridge, "TIMER_OVERRIDE_DIR", tmp_path / "timer.d")
+    for args in (["configure"], ["configure", "not-json"], ["configure", "[]"],
+                 ["configure", json.dumps({"frequency": "daily", "profile_id": "bad id"})]):
+        with pytest.raises(bridge.BridgeError):
+            bridge.cmd_manage_timer(args)
 
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert "error" in data
+
+def test_enable_disable_run_now(bridge, monkeypatch, capsys):
+    run_cmd, calls = _fake_systemctl({TIMER_UNIT: TIMER_ACTIVE, SERVICE_UNIT: SERVICE_IDLE})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    bridge.cmd_manage_timer(["enable"])
+    bridge.cmd_manage_timer(["disable"])
+    bridge.cmd_manage_timer(["run-now"])
+    assert ["systemctl", "enable", "--now", TIMER_UNIT] in calls
+    assert ["systemctl", "disable", "--now", TIMER_UNIT] in calls
+    assert ["systemctl", "start", "--no-block", SERVICE_UNIT] in calls
+    assert len(capsys.readouterr().out.splitlines()) == 3
+
+
+def test_enable_failure(bridge, monkeypatch):
+    run_cmd, _calls = _fake_systemctl({"enable --now cockpit-oscap-scan.timer": (1, "", "Failed to enable unit")})
+    monkeypatch.setattr(bridge, "run_cmd", run_cmd)
+    with pytest.raises(bridge.BridgeError, match="Failed to enable unit"):
+        bridge.cmd_manage_timer(["enable"])
+
+
+def test_invalid_actions(run_bridge):
+    assert "error" in run_bridge("manage-timer", expect_rc=1)
+    assert "error" in run_bridge("manage-timer", "restart", expect_rc=1)
+    assert "error" in run_bridge("validate-calendar", expect_rc=1)

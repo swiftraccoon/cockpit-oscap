@@ -1,170 +1,349 @@
 /*
- * TypeScript interfaces mirroring the Python TypedDicts in oscap-bridge.py.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * Keep in sync with the bridge — any field added/removed/renamed there
+ * TypeScript shapes mirroring the TypedDicts in src/oscap-bridge.py.
+ * Keep the two in sync: a field added, removed or renamed in the bridge
  * must be reflected here.
  */
-
-// ---------------------------------------------------------------------------
-// Enums as string unions
-// ---------------------------------------------------------------------------
-
-/** Risk classification for remediation scripts. */
-export type RiskLevel = "low" | "medium" | "high" | "critical";
-
-/** Possible results for a single SCAP rule evaluation. */
-export type RuleResultStatus =
-    | "pass"
-    | "fail"
-    | "error"
-    | "notapplicable"
-    | "notchecked"
-    | "notselected"
-    | "informational"
-    | "fixed";
 
 // ---------------------------------------------------------------------------
 // detect-backend
 // ---------------------------------------------------------------------------
 
-/** Information about the oscap binary. */
-export interface OscapInfo {
+export interface ToolInfo {
     version: string;
     path: string;
 }
 
-/** Information about the complyctl binary. */
-export interface ComplyctlInfo {
-    version: string;
+export interface DatastreamInfo {
     path: string;
+    name: string;
+    product: string;
 }
 
-/** Information about installed SCAP content. */
+export interface OsInfo {
+    id: string;
+    version_id: string;
+    pretty_name: string;
+}
+
+export type ContentSource = "config" | "detected" | "fallback" | "none";
+
 export interface ContentInfo {
     datastream_path: string;
     present: boolean;
+    source: ContentSource;
+    available: DatastreamInfo[];
+    os: OsInfo;
 }
 
-/** Response shape for detect-backend command. */
 export interface BackendInfo {
-    oscap: OscapInfo;
-    complyctl: ComplyctlInfo | null;
+    api_version: number;
+    oscap: ToolInfo | null;
+    complyctl: ToolInfo | null;
     content: ContentInfo;
+    privileged: boolean;
+    data_dir: string;
 }
 
 // ---------------------------------------------------------------------------
-// list-profiles / profile-rules
+// Configuration (config.json)
 // ---------------------------------------------------------------------------
 
-/** Profile metadata from an XCCDF datastream. */
+export interface Config {
+    active_profile?: string;
+    datastream?: string;
+    max_results?: number;
+    tailorings?: Record<string, string>;
+}
+
+export interface ConfigPatch {
+    active_profile?: string | null;
+    datastream?: string | null;
+    max_results?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Profiles, rules and values
+// ---------------------------------------------------------------------------
+
 export interface ProfileInfo {
     id: string;
     title: string;
     description: string;
     rule_count: number;
+    extends: string | null;
+    tailoring_path: string | null;
+    tailored_profile_id: string | null;
 }
 
-/** Rule metadata from an XCCDF datastream. */
+export type Severity = "high" | "medium" | "low" | "unknown";
+
 export interface RuleInfo {
     id: string;
     title: string;
     severity: string;
     description: string;
     selected: boolean;
+    group: string;
+    group_path: string[];
+    has_fix: boolean;
+}
+
+export interface ValueOption {
+    selector: string;
+    value: string;
+}
+
+export interface ValueInfo {
+    id: string;
+    title: string;
+    description: string;
+    type: string;
+    default: string;
+    value: string;
+    selector: string;
+    set_value: string | null;
+    options: ValueOption[];
+}
+
+export interface ProfileRules {
+    profile_id: string;
+    title: string;
+    rules: RuleInfo[];
+    values: ValueInfo[];
+}
+
+export interface Reference {
+    href: string;
+    text: string;
+}
+
+export interface Ident {
+    system: string;
+    text: string;
+}
+
+export interface RuleDetail {
+    id: string;
+    title: string;
+    severity: string;
+    description: string;
+    rationale: string;
+    warnings: string[];
+    references: Reference[];
+    idents: Ident[];
+    group_path: string[];
+    has_fix: boolean;
+    fix_systems: string[];
 }
 
 // ---------------------------------------------------------------------------
-// scan
+// Scan results
 // ---------------------------------------------------------------------------
 
-/** A single rule's evaluation result from an ARF report. */
+export type RuleResultStatus =
+    | "pass"
+    | "fail"
+    | "error"
+    | "notapplicable"
+    | "notchecked"
+    | "informational"
+    | "fixed"
+    | "unknown";
+
+export const RESULT_KINDS: RuleResultStatus[] = [
+    "pass", "fail", "error", "notapplicable", "notchecked", "informational", "fixed", "unknown",
+];
+
+export type ResultCounts = Record<RuleResultStatus, number>;
+
 export interface RuleResultItem {
     rule_id: string;
     result: string;
     title: string;
     severity: string;
+    group: string;
+    message: string;
 }
 
-/** Response shape for the scan command. */
+export type ScanStatus = "complete" | "interrupted" | string;
+
 export interface ScanResult {
+    id: string;
+    timestamp: string;
+    start_time: string;
+    end_time: string;
+    profile_id: string;
+    profile_title: string;
+    base_profile_id: string;
+    benchmark_id: string;
+    benchmark_version: string;
+    datastream: string;
+    tailoring_path: string | null;
+    tailored: boolean;
+    test_result_id: string;
+    status: ScanStatus;
     score: number;
+    xccdf_score: number | null;
+    counts: ResultCounts;
     results: RuleResultItem[];
     arf_path: string;
     json_path: string;
+}
+
+export interface ResultSummary {
+    id: string;
     timestamp: string;
     profile_id: string;
-    status: string;
+    profile_title: string;
+    score: number;
+    counts: ResultCounts;
+    total: number;
+    status: ScanStatus;
+    tailored: boolean;
+    has_arf: boolean;
+}
+
+export interface ReportInfo {
+    id: string;
+    html: string;
 }
 
 // ---------------------------------------------------------------------------
-// generate-fix / apply-fix
+// Streaming progress (scan / remediate) and the scan-state.json file
 // ---------------------------------------------------------------------------
 
-/** Per-rule fix snippet with risk classification. */
+export interface ScanProgress {
+    type: "progress";
+    running: true;
+    pid: number;
+    source: "interactive" | "scheduled" | string;
+    profile_id: string;
+    profile_title: string;
+    started: string;
+    current: number;
+    total: number;
+    progress: number;
+    rule_id: string;
+    result: string;
+}
+
+export interface ScanState {
+    running: boolean;
+    status?: "complete" | "failed" | "cancelled";
+    source?: string;
+    profile_id?: string;
+    profile_title?: string;
+    started?: string;
+    finished?: string;
+    current?: number;
+    total?: number;
+    progress?: number;
+    rule_id?: string;
+    result_id?: string;
+    score?: number;
+    counts?: ResultCounts;
+    error?: string;
+    pid?: number;
+}
+
+export interface RemediateProgress {
+    type: "progress";
+    current: number;
+    total: number;
+    rule_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// Remediation
+// ---------------------------------------------------------------------------
+
+export type RiskLevel = "low" | "medium" | "high";
+
 export interface FixRuleInfo {
     id: string;
+    title: string;
     fix_snippet: string;
-    risk_level: string;
+    risk_level: RiskLevel | string;
+    risk_reason: string;
+    has_fix: boolean;
 }
 
-/** Response shape for the generate-fix command. */
 export interface FixInfo {
+    result_id: string;
     script: string;
     rules: FixRuleInfo[];
 }
 
-/** Response shape for the apply-fix command. */
-export interface ApplyResult {
+export interface RuleRemediation {
+    rule_id: string;
     success: boolean;
+    exit_status: number;
     output: string;
     errors: string;
+}
+
+export interface RemediateResult {
+    result_id: string;
+    success: boolean;
+    script_path: string;
+    rules: RuleRemediation[];
 }
 
 // ---------------------------------------------------------------------------
 // Tailoring
 // ---------------------------------------------------------------------------
 
-/** A single rule modification inside a tailoring profile. */
+export type TailoringAction = "select" | "unselect" | "set-value" | "refine-value";
+
 export interface TailoringModification {
-    rule_id: string;
-    action: string;
+    idref: string;
+    action: TailoringAction;
     value?: string;
+    selector?: string;
 }
 
-/** Response shape for the create-tailoring command. */
-export interface TailoringResult {
-    tailoring_xml: string;
+export interface TailoringInfo {
     path: string;
-}
-
-/** Response shape for the parse-tailoring command. */
-export interface ParsedTailoring {
-    base_profile: string;
+    profile_id: string;
+    base_profile_id: string;
+    title: string;
+    benchmark_href: string;
     modifications: TailoringModification[];
+    tailoring_xml: string;
+    warning: string;
 }
 
 // ---------------------------------------------------------------------------
-// Timer management
+// Scheduled scans
 // ---------------------------------------------------------------------------
 
-/** Response shape for manage-timer status/enable/disable/configure. */
 export interface TimerStatus {
     status: string;
+    enabled: boolean;
+    installed: boolean;
     next_run: string;
-    frequency: string;
+    last_run: string;
+    calendar: string;
+    service_state: string;
+    service_result: string;
+    last_scan_finished: string;
 }
 
-// ---------------------------------------------------------------------------
-// Error / Config
-// ---------------------------------------------------------------------------
+export type ScheduleFrequency = "daily" | "weekly" | "monthly" | "custom";
 
-/** Error response from the bridge. */
-export interface ErrorResponse {
+export interface TimerConfig {
+    frequency: ScheduleFrequency;
+    day?: string;
+    time?: string;
+    calendar?: string;
+    profile_id?: string;
+}
+
+export interface CalendarCheck {
+    valid: boolean;
+    normalized: string;
+    next_elapse: string;
     error: string;
-}
-
-/** Persistent configuration stored in /var/lib/cockpit-oscap/config.json. */
-export interface Config {
-    active_profile?: string;
-    [key: string]: string | undefined;
 }

@@ -1,59 +1,132 @@
 # cockpit-oscap
 
-OpenSCAP compliance scanning for [Cockpit](https://cockpit-project.org/).
+OpenSCAP compliance scanning for the [Cockpit](https://cockpit-project.org/)
+web console.
 
-Based on [cockpit-project/starter-kit](https://github.com/cockpit-project/starter-kit).
+cockpit-oscap turns the OpenSCAP scanner and the
+[SCAP Security Guide](https://complianceascode.readthedocs.io/) into a
+first-class Cockpit page: evaluate the system against profiles such as CIS,
+DISA STIG, PCI DSS or ANSSI, drill into every rule, customize profiles, apply
+remediation with guard rails, and keep the system continuously assessed with
+scheduled scans.
 
-## Development dependencies
+## Features
 
-On Fedora:
+- **Overview** – the latest compliance score with the trend since the previous
+  scan, the rules that need attention grouped by severity, the active profile
+  and the state of scheduled scanning at a glance.
+- **Profiles** – every profile in the SCAP content installed on the system,
+  with the OS matched automatically (Fedora, RHEL and derivatives, Debian,
+  Ubuntu, openSUSE/SLE, Amazon Linux). Pick the active profile or choose
+  between several installed datastreams.
+- **Profile customization** – enable or disable rules and adjust values
+  (password lengths, timeouts, crypto policies, …) in an editor that groups
+  rules by category, shows their description, rationale and references, and
+  saves a standard XCCDF tailoring file. Tailoring files can be imported from
+  and exported to SCAP Workbench.
+- **Scanning** – run a scan from any page and follow live progress; scans
+  started by the scheduler show the same progress banner. Results are stored
+  as ARF plus a JSON summary and pruned to a configurable number.
+- **Results** – sortable history, per-rule results with on-demand details and
+  scanner messages, filters by result, severity and category, HTML report and
+  ARF downloads.
+- **Guided remediation** – review the bash fix generated for each failed rule,
+  with a risk classification (authentication, SSH, firewall, SELinux, boot
+  loader and mount changes are flagged high risk and unchecked by default),
+  apply the selected fixes one rule at a time, then re-scan to verify. The
+  applied script is kept for auditing; a script can also be downloaded to run
+  elsewhere.
+- **Scheduled scans** – a systemd timer with daily, weekly, monthly or custom
+  `OnCalendar` schedules (validated with `systemd-analyze`), the profile to use
+  and result retention, all editable from the page.
+- Works with Cockpit's limited-access mode: everything is readable without
+  administrative privileges, and privileged actions are disabled with an
+  explanation.
 
-    sudo dnf install gettext nodejs npm make
+## Requirements
 
-## Getting and building the source
+- Cockpit ≥ 300
+- `oscap` (package `openscap-scanner`, `openscap-utils` on SUSE)
+- SCAP Security Guide content in `/usr/share/xml/scap/ssg/content`
+  (`scap-security-guide`, or `ssg-base` + `ssg-debian` on Debian/Ubuntu)
+- Python ≥ 3.9 (the bridge runs with the system interpreter)
 
-```
+The page only appears in Cockpit's menu when `/usr/bin/oscap` exists. When
+the scanner or the content is missing, the page explains what to install.
+
+## Installation
+
+Packages are built from the source tarball with the RPM spec in `packaging/`
+(`make rpm` builds one locally). To install from a checkout:
+
+```sh
 git clone https://github.com/swiftraccoon/cockpit-oscap.git
 cd cockpit-oscap
 make
+sudo make install PREFIX=/usr
+sudo systemctl daemon-reload
 ```
 
-## Installing
+`make install` copies the built page to `$(PREFIX)/share/cockpit/oscap`, the
+bridge script next to it and the `cockpit-oscap-scan.service` and `.timer`
+units to `$(PREFIX)/lib/systemd/system` (override with `SYSTEMD_UNIT_DIR`).
 
-`make install` compiles and installs the package in `/usr/local/share/cockpit/`. The
-convenience targets `srpm` and `rpm` build the source and binary rpms,
-respectively.
+## Development
 
-For development, run `make devel-install` to link the checkout into Cockpit's
-package lookup path. Or manually:
+Build dependencies on Fedora: `sudo dnf install gettext nodejs npm make python3-pytest`.
+
+```sh
+make                 # fetch cockpit's shared libraries, install npm modules, build dist/
+make devel-install   # link dist/ into ~/.local/share/cockpit/oscap
+make watch           # rebuild on change
+make devel-uninstall
+```
+
+After `make devel-install`, log into Cockpit as the same user and open
+*Compliance*. Scheduled scans need the systemd units, which a development
+link does not install; the Schedule page says so.
+
+### Checks
+
+```sh
+npm run typecheck    # tsc, strict
+npm run eslint
+npm run stylelint
+ruff check src/oscap-bridge.py test-bridge/
+mypy src/oscap-bridge.py
+python3 -m pytest    # bridge unit tests; an end-to-end scan runs when oscap and SSG content are installed
+make lint            # all of the above
+make codecheck       # cockpit's static checks
+make check           # browser integration tests in a cockpit test VM
+```
+
+The same checks run in GitHub Actions on every pull request.
+
+## Architecture
 
 ```
-mkdir -p ~/.local/share/cockpit
-ln -s `pwd`/dist ~/.local/share/cockpit/oscap
+src/
+  oscap-bridge.py   Python bridge: one script, dispatched by argv[1], JSON on stdout
+  api.ts            typed wrappers around cockpit.spawn() for every bridge command
+  types.ts          TypeScript mirrors of the bridge's TypedDicts
+  app.tsx           shell: backend detection, tabs, scan banner, cockpit.location routing
+  pages/            Overview, Profiles, TailoringEditor, Results, ResultDetail, Schedule
+  components/       ScanDialog, RemediationDialog, RuleDetails, labels, states, ConfirmDialog
+systemd/            cockpit-oscap-scan.service + .timer
+test-bridge/        pytest suite for the bridge (synthetic datastream and ARF fixtures)
+test/               cockpit browser integration tests
 ```
 
-After changing the code and running `make` again, reload the Cockpit page in
-your browser.
+The frontend spawns the bridge with `python3 -c` and `superuser: "try"`, so
+Cockpit escalates through polkit when the session has administrative access.
+Long-running commands (`scan`, `remediate`) stream newline-delimited JSON
+progress; the bridge also keeps `/var/lib/cockpit-oscap/scan-state.json`
+current so every page can show a running scan, interactive or scheduled.
 
-Watch mode rebuilds automatically on code changes:
+Data lives in `/var/lib/cockpit-oscap`: `config.json` (active profile,
+datastream override, retention, tailoring files), `results/` (ARF + JSON per
+scan), `tailoring/` and `remediation/` (applied scripts).
 
-    make watch
+## License
 
-To uninstall the locally installed version:
-
-    make devel-uninstall
-
-## Running eslint
-
-    npm run eslint
-    npm run eslint:fix
-
-## Running stylelint
-
-    npm run stylelint
-    npm run stylelint:fix
-
-## Further reading
-
- * [Cockpit Deployment and Developer documentation](https://cockpit-project.org/guide/latest/)
- * [Make your project easily discoverable](https://cockpit-project.org/blog/making-a-cockpit-application.html)
+LGPL-2.1-or-later

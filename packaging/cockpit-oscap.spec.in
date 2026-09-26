@@ -36,7 +36,7 @@ BuildRequires: systemd-rpm-macros
 Requires: cockpit-bridge
 Requires: openscap-scanner
 Requires: scap-security-guide
-Requires: python3
+Requires: python3 >= 3.9
 Recommends: complyctl
 
 %{NPM_PROVIDES}
@@ -44,9 +44,10 @@ Recommends: complyctl
 %description
 OpenSCAP compliance scanning for Cockpit.
 
-Provides a web UI for running SCAP security scans, viewing compliance results,
-managing scan schedules, editing tailoring profiles, and applying remediations
-via the Cockpit web console.
+Evaluate the system against SCAP Security Guide profiles (CIS, STIG, PCI DSS,
+ANSSI, ...), browse results rule by rule, customize profiles with tailoring,
+apply guided remediation and schedule unattended scans, all from the Cockpit
+web console.
 
 %prep
 %autosetup -n %{name}
@@ -66,17 +67,12 @@ NODE_ENV=production NODE_PATH=/usr/lib/node_modules:$(echo /usr/lib/node_modules
 
 
 %install
-%make_install PREFIX=/usr
+%make_install PREFIX=/usr SYSTEMD_UNIT_DIR=%{_unitdir}
 
 # drop source maps, they are large and just for debugging
 find %{buildroot}%{_datadir}/cockpit/ -name '*.map' | xargs --no-run-if-empty rm --verbose
 
-# install the bridge script
-install -D -m 0755 src/oscap-bridge.py %{buildroot}%{_datadir}/cockpit/oscap/oscap-bridge.py
-
-# install systemd units
-install -D -m 0644 systemd/cockpit-oscap-scan.service %{buildroot}%{_unitdir}/cockpit-oscap-scan.service
-install -D -m 0644 systemd/cockpit-oscap-scan.timer %{buildroot}%{_unitdir}/cockpit-oscap-scan.timer
+# the bridge script and systemd units are installed by `make install`
 
 %check
 appstream-util validate-relax --nonet %{buildroot}/%{_datadir}/metainfo/*

@@ -1,276 +1,271 @@
-import React, { useEffect, useState } from "react";
-import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+/*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Profiles: the security profiles available in the SCAP content, which one
+ * scheduled scans use, and entry points to customize or scan with them.
+ */
+
+import React, { useState } from "react";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
-import { Card, CardBody, CardFooter, CardHeader, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
-import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
-import {
-    EmptyState,
-    EmptyStateBody,
-} from "@patternfly/react-core/dist/esm/components/EmptyState/index.js";
+import { Card, CardBody, CardFooter, CardTitle } from "@patternfly/react-core/dist/esm/components/Card/index.js";
+import { Content } from "@patternfly/react-core/dist/esm/components/Content/index.js";
+import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { ExpandableSection } from "@patternfly/react-core/dist/esm/components/ExpandableSection/index.js";
 import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
-import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
-import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
-import { Gallery, GalleryItem } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.js";
-import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
+import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
+import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import { Gallery } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.js";
+import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
 import cockpit from "cockpit";
 
-import { detectBackend, listProfiles, loadConfig } from "../api";
-import type { BackendInfo, Config, ProfileInfo } from "../types";
+import { KebabDropdown } from "cockpit-components-dropdown";
+import { EmptyStatePanel } from "cockpit-components-empty-state";
+import { SimpleSelect } from "cockpit-components-simple-select";
+import { useDialogs } from "dialogs";
+
+import { deleteTailoring, getConfig, listProfiles, readFile, setConfig } from "../api";
+import { useApp } from "../app";
+import { useAsync } from "../app-hooks";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { TailoredLabel } from "../components/labels";
+import { ErrorAlert, ErrorState, Loading } from "../components/states";
+import { downloadFile, errorMessage, matchesSearch, profileShortName, safeFilename } from "../helpers";
+import type { ProfileInfo } from "../types";
 
 const _ = cockpit.gettext;
 
-const CONFIG_PATH = "/var/lib/cockpit-oscap/config.json";
-
-/** Check whether a profile id looks like a CIS benchmark (typically draft). */
-function isCisProfile(profileId: string): boolean {
-    return profileId.toLowerCase().includes("cis");
-}
-
-export const ProfilesPage: React.FunctionComponent = () => {
-    const [loading, setLoading] = useState(true);
+export const ProfilesPage = () => {
+    const app = useApp();
+    const Dialogs = useDialogs();
+    const data = useAsync(async () => {
+        const [profiles, config] = await Promise.all([listProfiles(), getConfig()]);
+        return { profiles, config };
+    }, [app.version]);
+    const [search, setSearch] = useState("");
+    const [busy, setBusy] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-    const [config, setConfig] = useState<Config>({});
-    const [backend, setBackend] = useState<BackendInfo | null>(null);
-    const [activating, setActivating] = useState<string | null>(null);
-    const [importAlert, setImportAlert] = useState(false);
 
-    useEffect(() => {
-        let cancelled = false;
+    if (data.loading && !data.data)
+        return <Loading />;
+    if (data.error || !data.data)
+        return <ErrorState title={_("Failed to load profiles")} error={data.error} onRetry={() => data.reload()} />;
 
-        async function init() {
-            try {
-                const [profileList, configData, backendInfo] = await Promise.all([
-                    listProfiles(),
-                    loadConfig(),
-                    detectBackend(),
-                ]);
-                if (cancelled) return;
+    const { profiles, config } = data.data;
+    const datastreams = app.backend.content.available;
+    const readOnly = app.superuser === false;
 
-                setProfiles(profileList);
-                setConfig(configData);
-                setBackend(backendInfo);
-            } catch (err) {
-                if (cancelled) return;
-                setError(String(err));
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        }
-
-        init();
-        return () => { cancelled = true };
-    }, []);
-
-    /** Set a profile as active by updating config.json. */
-    async function activateProfile(profileId: string) {
-        setActivating(profileId);
+    async function activate(profile: ProfileInfo) {
+        setBusy(profile.id);
+        setError(null);
         try {
-            await cockpit.file(CONFIG_PATH, { superuser: "try" })
-                    .modify((content: string | null) => {
-                        const cfg: Config = content ? JSON.parse(content) : {};
-                        cfg.active_profile = profileId;
-                        return JSON.stringify(cfg, null, 2);
-                    });
-            setConfig(prev => ({ ...prev, active_profile: profileId }));
+            const updated = await setConfig({ active_profile: profile.id });
+            data.setData(prev => prev && { ...prev, config: updated });
         } catch (err) {
-            setError(cockpit.format(_("Failed to activate profile: $0"), String(err)));
+            setError(errorMessage(err));
         } finally {
-            setActivating(null);
+            setBusy(null);
         }
     }
 
-    /* Loading state */
-    if (loading) {
-        return (
-            <PageSection>
-                <Flex justifyContent={{ default: "justifyContentCenter" }}>
-                    <FlexItem>
-                        <Spinner size="xl" aria-label={_("Loading")} />
-                    </FlexItem>
-                </Flex>
-            </PageSection>
-        );
+    async function selectDatastream(path: string) {
+        setError(null);
+        try {
+            await setConfig({ datastream: path });
+            app.reloadBackend();
+            app.bump();
+        } catch (err) {
+            setError(errorMessage(err));
+        }
     }
 
-    /* Error state */
-    if (error) {
-        return (
-            <PageSection>
-                <Alert variant="danger" title={_("Failed to load profiles")}>
-                    {error}
-                </Alert>
-            </PageSection>
-        );
+    async function exportTailoring(profile: ProfileInfo) {
+        if (!profile.tailoring_path)
+            return;
+        try {
+            const xml = await readFile(profile.tailoring_path);
+            downloadFile(`${safeFilename(profileShortName(profile.id))}-tailoring.xml`, xml, "application/xml");
+        } catch (err) {
+            setError(errorMessage(err));
+        }
     }
 
-    /* No profiles found */
-    if (profiles.length === 0) {
-        return (
-            <PageSection>
-                <EmptyState
-                    titleText={_("No profiles available")}
-                    headingLevel="h2"
-                >
-                    <EmptyStateBody>
-                        {_("Install scap-security-guide to make SCAP profiles available.")}
-                    </EmptyStateBody>
-                </EmptyState>
-            </PageSection>
-        );
+    async function removeTailoring(profile: ProfileInfo) {
+        const confirmed = await Dialogs.run(ConfirmDialog, {
+            title: _("Remove customizations?"),
+            body: cockpit.format(_("The saved customizations for $0 will be deleted. Scans will use the profile defaults."),
+                                 profile.title),
+            confirmText: _("Remove"),
+            isDanger: true,
+        });
+        if (!confirmed)
+            return;
+        try {
+            await deleteTailoring(profile.id);
+            app.bump();
+        } catch (err) {
+            setError(errorMessage(err));
+        }
     }
 
-    const activeProfileId = config.active_profile;
+    const shown = profiles.filter(p => matchesSearch(search, p.title, p.id, p.description));
 
     return (
-        <PageSection>
-            {/* Header row */}
-            <Flex
-                justifyContent={{ default: "justifyContentSpaceBetween" }}
-                alignItems={{ default: "alignItemsCenter" }}
-                style={{ marginBottom: "var(--pf-t--global--spacer--md)" }}
-            >
-                <FlexItem>
-                    <Content component={ContentVariants.h1}>
-                        {_("Security Profiles")}
+        <Stack hasGutter>
+            <StackItem>
+                <Toolbar id="profiles-toolbar" inset={{ default: "insetNone" }}>
+                    <ToolbarContent>
+                        <ToolbarItem>
+                            <SearchInput
+                                id="profiles-search"
+                                placeholder={_("Search profiles")}
+                                value={search}
+                                onChange={(_ev, value) => setSearch(value)}
+                                onClear={() => setSearch("")}
+                            />
+                        </ToolbarItem>
+                        {datastreams.length > 1 && (
+                            <ToolbarItem>
+                                <SimpleSelect
+                                    toggleProps={{ id: "profiles-datastream" }}
+                                    options={datastreams.map(ds => ({ value: ds.path, content: ds.name }))}
+                                    selected={app.backend.content.datastream_path}
+                                    onSelect={value => selectDatastream(value)}
+                                    isDisabled={readOnly}
+                                />
+                            </ToolbarItem>
+                        )}
+                        <ToolbarItem align={{ default: "alignEnd" }}>
+                            <span className="oscap-toolbar-count">
+                                {cockpit.format(cockpit.ngettext("$0 profile", "$0 profiles", shown.length), shown.length)}
+                                {" · "}
+                                {app.backend.content.datastream_path.split("/").pop()}
+                            </span>
+                        </ToolbarItem>
+                    </ToolbarContent>
+                </Toolbar>
+            </StackItem>
+            {error && (
+                <StackItem>
+                    <ErrorAlert title={_("Operation failed")} error={error} onDismiss={() => setError(null)} />
+                </StackItem>
+            )}
+            {app.backend.content.source === "fallback" && (
+                <StackItem>
+                    <Content component="small" className="oscap-muted">
+                        {_("No SCAP content matches this operating system exactly; showing the newest content installed.")}
                     </Content>
-                </FlexItem>
-                <FlexItem>
-                    <Button
-                        variant="secondary"
-                        onClick={() => setImportAlert(true)}
-                    >
-                        {_("Import Tailoring")}
-                    </Button>
-                </FlexItem>
-            </Flex>
-
-            {/* Import tailoring placeholder alert */}
-            {importAlert && (
-                <Alert
-                    variant="info"
-                    isInline
-                    title={_("Import not yet available")}
-                    actionClose={<Button variant="plain" onClick={() => setImportAlert(false)}>{_("Dismiss")}</Button>}
-                    style={{ marginBottom: "var(--pf-t--global--spacer--md)" }}
-                >
-                    {_("Tailoring file import will be available in a future update.")}
-                </Alert>
+                </StackItem>
             )}
-
-            {/* Content source info bar */}
-            {backend && (
-                <Content
-                    component={ContentVariants.small}
-                    style={{ marginBottom: "var(--pf-t--global--spacer--md)" }}
-                >
-                    {cockpit.format(
-                        _("Datastream: $0 \u00B7 OpenSCAP $1"),
-                        backend.content.datastream_path,
-                        backend.oscap.version
-                    )}
-                </Content>
-            )}
-
-            {/* Profile card grid */}
-            <Gallery hasGutter minWidths={{ default: "300px" }}>
-                {profiles.map(profile => {
-                    const isActive = profile.id === activeProfileId;
-                    const isDraft = isCisProfile(profile.id);
-
-                    return (
-                        <GalleryItem key={profile.id}>
-                            <Card
-                                isSelectable={isActive}
-                                isSelected={isActive}
-                                isFullHeight
-                                isCompact
-                            >
-                                <CardHeader>
-                                    <CardTitle>
-                                        <Flex
-                                            spaceItems={{ default: "spaceItemsSm" }}
-                                            alignItems={{ default: "alignItemsCenter" }}
-                                        >
-                                            <FlexItem>{profile.title}</FlexItem>
-                                            {isActive && (
-                                                <FlexItem>
-                                                    <Label color="blue" isCompact>{_("ACTIVE")}</Label>
-                                                </FlexItem>
-                                            )}
-                                            {isDraft && (
-                                                <FlexItem>
-                                                    <Label color="yellow" isCompact>{_("DRAFT")}</Label>
-                                                </FlexItem>
-                                            )}
-                                        </Flex>
-                                    </CardTitle>
-                                </CardHeader>
-                                <CardBody>
-                                    <Content component={ContentVariants.p}>
-                                        {profile.description}
-                                    </Content>
-                                    <Content
-                                        component={ContentVariants.small}
-                                        style={{ marginTop: "var(--pf-t--global--spacer--sm)" }}
+            <StackItem>
+                {shown.length === 0
+                    ? (
+                        <EmptyStatePanel
+                            title={profiles.length === 0 ? _("No profiles available") : _("No matching profiles")}
+                            paragraph={profiles.length === 0
+                                ? _("The selected SCAP content does not define any profiles.")
+                                : _("Try a different search term.")}
+                        />
+                    )
+                    : (
+                        <Gallery hasGutter minWidths={{ default: "100%", md: "360px" }}>
+                            {shown.map(profile => {
+                                const isActive = profile.id === config.active_profile;
+                                const short = profileShortName(profile.id);
+                                const kebab = [
+                                    <DropdownItem
+key="scan" isDisabled={readOnly || app.scanning}
+                                                  onClick={() => app.runScan(profile.id)}
                                     >
-                                        {cockpit.format(_("$0 rules"), profile.rule_count)}
-                                    </Content>
-                                </CardBody>
-                                <CardFooter>
-                                    {isActive
-                                        ? (
-                                            <Flex spaceItems={{ default: "spaceItemsSm" }}>
-                                                <FlexItem>
+                                        {_("Run scan with this profile")}
+                                    </DropdownItem>,
+                                    <DropdownItem key="customize" onClick={() => cockpit.location.go(["profiles", profile.id])}>
+                                        {_("Customize")}
+                                    </DropdownItem>,
+                                ];
+                                if (profile.tailoring_path) {
+                                    kebab.push(
+                                        <DropdownItem key="export" onClick={() => exportTailoring(profile)}>
+                                            {_("Export customizations")}
+                                        </DropdownItem>,
+                                        <DropdownItem
+key="remove" isDanger isDisabled={readOnly}
+                                                      onClick={() => removeTailoring(profile)}
+                                        >
+                                            {_("Remove customizations")}
+                                        </DropdownItem>,
+                                    );
+                                }
+                                return (
+                                    <Card
+key={profile.id} id={`profile-${safeFilename(short)}`}
+                                          className="ct-card oscap-profile-card" isFullHeight
+                                    >
+                                        <CardTitle>
+                                            <span>{profile.title}</span>
+                                            {isActive && <Label status="info" isCompact>{_("Active")}</Label>}
+                                            {profile.tailoring_path && <TailoredLabel />}
+                                        </CardTitle>
+                                        <CardBody>
+                                            <Stack hasGutter>
+                                                <StackItem>
+                                                    <ExpandableSection
+                                                        variant="truncate"
+                                                        truncateMaxLines={3}
+                                                        toggleTextExpanded={_("Show less")}
+                                                        toggleTextCollapsed={_("Show more")}
+                                                    >
+                                                        <span className="oscap-prose">
+                                                            {profile.description || _("No description available.")}
+                                                        </span>
+                                                    </ExpandableSection>
+                                                </StackItem>
+                                                <StackItem>
+                                                    <Content component="small">
+                                                        {cockpit.format(cockpit.ngettext("$0 rule", "$0 rules", profile.rule_count),
+                                                                        profile.rule_count)}
+                                                        {" · "}
+                                                        <span className="oscap-mono">{short}</span>
+                                                    </Content>
+                                                </StackItem>
+                                            </Stack>
+                                        </CardBody>
+                                        <CardFooter className="oscap-card-actions">
+                                            {isActive
+                                                ? (
+                                                    <Button variant="secondary" size="sm" isDisabled>
+                                                        {_("Active profile")}
+                                                    </Button>
+                                                )
+                                                : (
                                                     <Button
                                                         variant="primary"
                                                         size="sm"
-                                                        onClick={() => cockpit.location.go(["profiles", profile.id])}
+                                                        isLoading={busy === profile.id}
+                                                        isDisabled={busy !== null || readOnly}
+                                                        onClick={() => activate(profile)}
                                                     >
-                                                        {_("Edit Tailoring")}
+                                                        {_("Set as active")}
                                                     </Button>
-                                                </FlexItem>
-                                                <FlexItem>
-                                                    <Button
-                                                        variant="secondary"
-                                                        size="sm"
-                                                        onClick={() => cockpit.location.go(["profiles", profile.id])}
-                                                    >
-                                                        {_("Export Tailoring")}
-                                                    </Button>
-                                                </FlexItem>
-                                            </Flex>
-                                        )
-                                        : (
-                                            <Flex spaceItems={{ default: "spaceItemsSm" }}>
-                                                <FlexItem>
-                                                    <Button
-                                                        variant="primary"
-                                                        size="sm"
-                                                        isLoading={activating === profile.id}
-                                                        isDisabled={activating !== null}
-                                                        onClick={() => activateProfile(profile.id)}
-                                                    >
-                                                        {_("Activate")}
-                                                    </Button>
-                                                </FlexItem>
-                                                <FlexItem>
-                                                    <Button
-                                                        variant="secondary"
-                                                        size="sm"
-                                                        onClick={() => cockpit.location.go(["profiles", profile.id])}
-                                                    >
-                                                        {_("Customize")}
-                                                    </Button>
-                                                </FlexItem>
-                                            </Flex>
-                                        )}
-                                </CardFooter>
-                            </Card>
-                        </GalleryItem>
-                    );
-                })}
-            </Gallery>
-        </PageSection>
+                                                )}
+                                            <Button
+variant="link" size="sm" isInline
+                                                    onClick={() => cockpit.location.go(["profiles", profile.id])}
+                                            >
+                                                {_("Customize")}
+                                            </Button>
+                                            <span className="oscap-card-actions-end">
+                                                <KebabDropdown
+toggleButtonId={`profile-actions-${safeFilename(short)}`}
+                                                               dropdownItems={kebab}
+                                                />
+                                            </span>
+                                        </CardFooter>
+                                    </Card>
+                                );
+                            })}
+                        </Gallery>
+                    )}
+            </StackItem>
+        </Stack>
     );
 };

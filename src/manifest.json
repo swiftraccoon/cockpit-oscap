@@ -1,5 +1,37 @@
 {
     "requires": { "cockpit": "300" },
     "conditions": [{ "path-exists": "/usr/bin/oscap" }],
-    "menu": { "index": { "label": "Compliance", "order": 15 } }
+    "menu": {
+        "index": {
+            "label": "Compliance",
+            "order": 15,
+            "docs": [
+                {
+                    "label": "OpenSCAP documentation",
+                    "url": "https://www.open-scap.org/resources/documentation/"
+                },
+                {
+                    "label": "SCAP Security Guide",
+                    "url": "https://complianceascode.readthedocs.io/"
+                }
+            ],
+            "keywords": [
+                {
+                    "matches": ["openscap", "oscap", "scap", "compliance", "security", "hardening", "audit",
+                                "benchmark", "profile", "remediation", "tailoring", "stig", "cis", "pci", "hipaa"]
+                }
+            ]
+        }
+    },
+    "config": {
+        "install-hints": {
+            "fedora": "sudo dnf install openscap-scanner scap-security-guide",
+            "rhel": "sudo dnf install openscap-scanner scap-security-guide",
+            "centos": "sudo dnf install openscap-scanner scap-security-guide",
+            "debian": "sudo apt install openscap-scanner ssg-base ssg-debian",
+            "ubuntu": "sudo apt install openscap-scanner ssg-base ssg-debian",
+            "opensuse": "sudo zypper install openscap-utils scap-security-guide",
+            "suse": "sudo zypper install openscap-utils scap-security-guide"
+        }
+    }
 }

@@ -1,376 +1,232 @@
-import React, { useEffect, useState } from "react";
-import { Alert } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+/*
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ * Results: the history of scans kept on this system.
+ */
+
+import React, { useState } from "react";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
-import { Card, CardBody } from "@patternfly/react-core/dist/esm/components/Card/index.js";
-import { Content, ContentVariants } from "@patternfly/react-core/dist/esm/components/Content/index.js";
-import {
-    EmptyState,
-    EmptyStateActions,
-    EmptyStateBody,
-    EmptyStateFooter,
-} from "@patternfly/react-core/dist/esm/components/EmptyState/index.js";
-import { Label } from "@patternfly/react-core/dist/esm/components/Label/index.js";
-import { PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
-import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
-import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
-import { Table, Thead, Tbody, Tr, Th, Td } from "@patternfly/react-table/dist/esm/components/Table/index.js";
+import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
+import { Toolbar, ToolbarContent, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import { Stack, StackItem } from "@patternfly/react-core/dist/esm/layouts/Stack/index.js";
+import { SortByDirection } from "@patternfly/react-table";
 import cockpit from "cockpit";
 
-import type { ScanResult } from "../types";
+import { KebabDropdown } from "cockpit-components-dropdown";
+import { EmptyStatePanel } from "cockpit-components-empty-state";
+import { ListingTable } from "cockpit-components-table";
+import type { ListingTableRowProps } from "cockpit-components-table";
+import { useDialogs } from "dialogs";
+import * as timeformat from "timeformat";
+
+import { RESULTS_DIR, deleteResult, generateReport, listResults, readFile } from "../api";
+import { useApp } from "../app";
+import { useAsync } from "../app-hooks";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CountLabels, ScanStatusLabel, ScoreLabel, TailoredLabel } from "../components/labels";
+import { ErrorAlert, ErrorState, Loading } from "../components/states";
+import { downloadFile, errorMessage, matchesSearch, parseTimestamp, safeFilename } from "../helpers";
+import type { ResultSummary } from "../types";
 
 const _ = cockpit.gettext;
 
-const RESULTS_DIR = "/var/lib/cockpit-oscap/results";
-
-/** Metadata extracted from each scan result JSON, plus its filename. */
-interface ScanSummary {
-    filename: string;
-    timestamp: string;
-    profileId: string;
-    score: number;
-    passCount: number;
-    failCount: number;
-    errorCount: number;
-    status: string;
-    totalRules: number;
+export async function downloadReport(id: string): Promise<void> {
+    const report = await generateReport(id);
+    downloadFile(`compliance-report-${safeFilename(id)}.html`, report.html, "text/html");
 }
 
-/** Parse a ScanResult into a ScanSummary. */
-function summarize(filename: string, data: ScanResult): ScanSummary {
-    const passCount = data.results.filter(r => r.result === "pass").length;
-    const failCount = data.results.filter(r => r.result === "fail").length;
-    const errorCount = data.results.filter(r => r.result === "error").length;
-
-    return {
-        filename,
-        timestamp: data.timestamp,
-        profileId: data.profile_id,
-        score: data.score,
-        passCount,
-        failCount,
-        errorCount,
-        status: data.status || "complete",
-        totalRules: data.results.length,
-    };
+export async function downloadArf(id: string): Promise<void> {
+    const xml = await readFile(`${RESULTS_DIR}/${id}.arf.xml`);
+    downloadFile(`compliance-results-${safeFilename(id)}.arf.xml`, xml, "application/xml");
 }
 
-/** Format a timestamp to a localized date/time string.
- *  Handles the bridge's compact format: "2026-04-08T025531" → "2026-04-08T02:55:31"
- */
-function formatTimestamp(ts: string): string {
-    // Insert colons into compact HHMMSS portion if needed
-    const normalized = ts.replace(
-        /T(\d{2})(\d{2})(\d{2})$/,
-        "T$1:$2:$3"
-    );
-    const date = new Date(normalized);
-    if (isNaN(date.getTime())) return ts;
-    return date.toLocaleString();
-}
+export const ResultsPage = () => {
+    const app = useApp();
+    const Dialogs = useDialogs();
+    const results = useAsync(listResults, [app.version]);
+    const [search, setSearch] = useState("");
+    const [error, setError] = useState<string | null>(null);
 
-/** Status label color mapping. */
-function statusColor(status: string): "green" | "orange" | "red" | "grey" {
-    switch (status.toLowerCase()) {
-    case "complete":
-    case "completed":
-        return "green";
-    case "interrupted":
-        return "orange";
-    case "error":
-        return "red";
-    default:
-        return "grey";
+    if (results.loading && !results.data)
+        return <Loading />;
+    if (results.error || !results.data)
+        return <ErrorState title={_("Failed to load scan results")} error={results.error} onRetry={() => results.reload()} />;
+
+    const all = results.data;
+
+    if (all.length === 0) {
+        return (
+            <EmptyStatePanel
+                title={_("No scan results yet")}
+                paragraph={_("Every scan is kept here with its full report, so you can track how compliance changes over time.")}
+                action={
+                    <Button
+variant="primary" onClick={() => app.runScan()}
+                            isDisabled={app.superuser === false || app.scanning}
+                    >
+                        {_("Run scan")}
+                    </Button>
+                }
+            />
+        );
     }
-}
 
-/** Column indices for sorting. */
-const COL_DATE = 0;
-const COL_PROFILE = 1;
-const COL_SCORE = 2;
-const COL_PASS = 3;
-const COL_STATUS = 4;
-
-export const ResultsPage: React.FunctionComponent = () => {
-    const [loading, setLoading] = useState(true);
-    const [error] = useState<string | null>(null);
-    const [scans, setScans] = useState<ScanSummary[]>([]);
-    const [sortIndex, setSortIndex] = useState<number>(COL_DATE);
-    const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
-
-    useEffect(() => {
-        let cancelled = false;
-
-        async function loadResults() {
-            try {
-                const listing = await cockpit.spawn(
-                    ["ls", "-1", RESULTS_DIR],
-                    { superuser: "try", err: "ignore" },
-                );
-                const jsonFiles = listing.trim().split("\n")
-                        .filter(f => f.endsWith(".json"));
-
-                if (jsonFiles.length === 0) {
-                    if (!cancelled) {
-                        setScans([]);
-                        setLoading(false);
-                    }
-                    return;
-                }
-
-                const summaries: ScanSummary[] = [];
-                for (const file of jsonFiles) {
-                    try {
-                        const content = await cockpit
-                                .file(`${RESULTS_DIR}/${file}`, { superuser: "try" })
-                                .read();
-                        if (content !== null && content !== undefined) {
-                            const data = JSON.parse(content) as ScanResult;
-                            summaries.push(summarize(file, data));
-                        }
-                    } catch {
-                        // Skip files that can't be read or parsed
-                    }
-                }
-
-                if (!cancelled) {
-                    setScans(summaries);
-                }
-            } catch {
-                // Directory doesn't exist or is empty
-                if (!cancelled) {
-                    setScans([]);
-                }
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
+    async function guarded(action: () => Promise<void>) {
+        setError(null);
+        try {
+            await action();
+        } catch (err) {
+            setError(errorMessage(err));
         }
-
-        loadResults();
-        return () => { cancelled = true };
-    }, []);
-
-    /* ------------------------------------------------------------------ */
-    /* Sorting                                                             */
-    /* ------------------------------------------------------------------ */
-
-    function onSort(
-        _event: React.MouseEvent,
-        index: number,
-        direction: "asc" | "desc",
-    ) {
-        setSortIndex(index);
-        setSortDirection(direction);
     }
 
-    function sortedScans(): ScanSummary[] {
-        const sorted = [...scans];
-        sorted.sort((a, b) => {
-            let cmp = 0;
-            switch (sortIndex) {
-            case COL_DATE:
-                cmp = a.timestamp.localeCompare(b.timestamp);
-                break;
-            case COL_PROFILE:
-                cmp = a.profileId.localeCompare(b.profileId);
-                break;
-            case COL_SCORE:
-                cmp = a.score - b.score;
-                break;
-            case COL_PASS:
-                cmp = a.passCount - b.passCount;
-                break;
-            case COL_STATUS:
-                cmp = a.status.localeCompare(b.status);
-                break;
-            default:
-                cmp = 0;
-            }
-            return sortDirection === "asc" ? cmp : -cmp;
+    async function remove(summary: ResultSummary) {
+        const date = parseTimestamp(summary.timestamp);
+        const confirmed = await Dialogs.run(ConfirmDialog, {
+            title: _("Delete scan result?"),
+            body: cockpit.format(_("The scan of $0 from $1 and its report will be deleted permanently."),
+                                 summary.profile_title || summary.profile_id,
+                                 date ? timeformat.dateTime(date) : summary.timestamp),
+            confirmText: _("Delete"),
+            isDanger: true,
         });
-        return sorted;
+        if (confirmed)
+            await guarded(async () => { await deleteResult(summary.id); app.bump() });
     }
 
-    /** Navigate to the detail page for a scan result. */
-    function onRowClick(filename: string) {
-        // Strip .json extension
-        const resultId = filename.replace(/\.json$/, "");
-        cockpit.location.go(["results", resultId]);
-    }
+    const shown = all.filter(s => matchesSearch(search, s.profile_title, s.profile_id, s.id));
+    const byId = new Map(shown.map(s => [s.id, s]));
 
-    /* ------------------------------------------------------------------ */
-    /* Render                                                              */
-    /* ------------------------------------------------------------------ */
-
-    if (loading) {
-        return (
-            <PageSection>
-                <Flex justifyContent={{ default: "justifyContentCenter" }}>
-                    <FlexItem>
-                        <Spinner size="xl" aria-label={_("Loading")} />
-                    </FlexItem>
-                </Flex>
-            </PageSection>
-        );
-    }
-
-    if (error) {
-        return (
-            <PageSection>
-                <Alert variant="danger" title={_("Failed to load scan results")}>
-                    {error}
-                </Alert>
-            </PageSection>
-        );
-    }
-
-    if (scans.length === 0) {
-        return (
-            <PageSection>
-                <EmptyState
-                    titleText={_("No scan results yet")}
-                    headingLevel="h2"
-                >
-                    <EmptyStateBody>
-                        {_("Run a compliance scan to see historical results here.")}
-                    </EmptyStateBody>
-                    <EmptyStateFooter>
-                        <EmptyStateActions>
-                            <Button
-                                variant="primary"
-                                onClick={() => cockpit.location.go(["scan"])}
-                            >
-                                {_("Run Scan")}
-                            </Button>
-                        </EmptyStateActions>
-                    </EmptyStateFooter>
-                </EmptyState>
-            </PageSection>
-        );
-    }
-
-    const sortBy = { index: sortIndex, direction: sortDirection };
-    const sorted = sortedScans();
+    const sortMethod = (rows: ListingTableRowProps[], direction: SortByDirection, index: number) => {
+        const key = (row: ListingTableRowProps) => byId.get(String(row.props?.key));
+        const sorted = [...rows].sort((a, b) => {
+            const sa = key(a);
+            const sb = key(b);
+            if (!sa || !sb)
+                return 0;
+            switch (index) {
+            case 1:
+                return (sa.profile_title || sa.profile_id).localeCompare(sb.profile_title || sb.profile_id);
+            case 2:
+                return sa.score - sb.score;
+            case 3:
+                return sa.counts.fail - sb.counts.fail;
+            case 4:
+                return sa.status.localeCompare(sb.status);
+            default:
+                return sa.timestamp.localeCompare(sb.timestamp) || sa.id.localeCompare(sb.id);
+            }
+        });
+        return direction === SortByDirection.asc ? sorted : sorted.reverse();
+    };
 
     return (
-        <PageSection>
-            <Content
-                component={ContentVariants.h1}
-                style={{ marginBottom: "var(--pf-t--global--spacer--md)" }}
-            >
-                {_("Scan Results")}
-            </Content>
-
-            <Card>
-                <CardBody>
-                    <Table aria-label={_("Scan results history")} variant="compact">
-                        <Thead>
-                            <Tr>
-                                <Th
-                                    sort={{
-                                        sortBy,
-                                        onSort,
-                                        columnIndex: COL_DATE,
-                                    }}
-                                >
-                                    {_("Date / Time")}
-                                </Th>
-                                <Th
-                                    sort={{
-                                        sortBy,
-                                        onSort,
-                                        columnIndex: COL_PROFILE,
-                                    }}
-                                >
-                                    {_("Profile")}
-                                </Th>
-                                <Th
-                                    sort={{
-                                        sortBy,
-                                        onSort,
-                                        columnIndex: COL_SCORE,
-                                    }}
-                                >
-                                    {_("Score")}
-                                </Th>
-                                <Th
-                                    sort={{
-                                        sortBy,
-                                        onSort,
-                                        columnIndex: COL_PASS,
-                                    }}
-                                >
-                                    {_("Pass / Fail / Error")}
-                                </Th>
-                                <Th
-                                    sort={{
-                                        sortBy,
-                                        onSort,
-                                        columnIndex: COL_STATUS,
-                                    }}
-                                >
-                                    {_("Status")}
-                                </Th>
-                            </Tr>
-                        </Thead>
-                        <Tbody>
-                            {sorted.map(scan => (
-                                <Tr
-                                    key={scan.filename}
-                                    isClickable
-                                    onRowClick={() => onRowClick(scan.filename)}
-                                >
-                                    <Td dataLabel={_("Date / Time")}>
-                                        {formatTimestamp(scan.timestamp)}
-                                    </Td>
-                                    <Td dataLabel={_("Profile")}>
-                                        {scan.profileId}
-                                    </Td>
-                                    <Td dataLabel={_("Score")}>
-                                        {cockpit.format("$0%", scan.score.toFixed(1))}
-                                    </Td>
-                                    <Td dataLabel={_("Pass / Fail / Error")}>
-                                        <Flex
-                                            spaceItems={{ default: "spaceItemsSm" }}
-                                            flexWrap={{ default: "nowrap" }}
-                                        >
-                                            <FlexItem>
-                                                <Label color="green" isCompact>
-                                                    {scan.passCount}
-                                                </Label>
-                                            </FlexItem>
-                                            <FlexItem>
-                                                <Label color="red" isCompact>
-                                                    {scan.failCount}
-                                                </Label>
-                                            </FlexItem>
-                                            <FlexItem>
-                                                <Label color="orange" isCompact>
-                                                    {scan.errorCount}
-                                                </Label>
-                                            </FlexItem>
-                                        </Flex>
-                                    </Td>
-                                    <Td dataLabel={_("Status")}>
-                                        <Label color={statusColor(scan.status)} isCompact>
-                                            {scan.status}
-                                        </Label>
-                                    </Td>
-                                </Tr>
-                            ))}
-                        </Tbody>
-                    </Table>
-                </CardBody>
-            </Card>
-
-            <Content
-                component={ContentVariants.small}
-                style={{
-                    marginTop: "var(--pf-t--global--spacer--sm)",
-                    textAlign: "center",
-                }}
-            >
-                {cockpit.format(_("$0 scan result(s)"), scans.length)}
-            </Content>
-        </PageSection>
+        <Stack hasGutter>
+            <StackItem>
+                <Toolbar id="results-toolbar" inset={{ default: "insetNone" }}>
+                    <ToolbarContent>
+                        <ToolbarItem>
+                            <SearchInput
+                                id="results-search"
+                                placeholder={_("Search by profile")}
+                                value={search}
+                                onChange={(_ev, value) => setSearch(value)}
+                                onClear={() => setSearch("")}
+                            />
+                        </ToolbarItem>
+                        <ToolbarItem align={{ default: "alignEnd" }}>
+                            <span className="oscap-toolbar-count">
+                                {cockpit.format(cockpit.ngettext("$0 scan", "$0 scans", shown.length), shown.length)}
+                            </span>
+                        </ToolbarItem>
+                    </ToolbarContent>
+                </Toolbar>
+            </StackItem>
+            {error && (
+                <StackItem>
+                    <ErrorAlert title={_("Operation failed")} error={error} onDismiss={() => setError(null)} />
+                </StackItem>
+            )}
+            <StackItem>
+                <ListingTable
+                    id="results-table"
+                    aria-label={_("Scan results")}
+                    variant="compact"
+                    columns={[
+                        { title: _("Date"), sortable: true, props: { modifier: "nowrap" } },
+                        { title: _("Profile"), sortable: true, props: { width: 40 } },
+                        { title: _("Score"), sortable: true, props: { modifier: "fitContent" } },
+                        { title: _("Passed / Failed / Errors"), sortable: true, props: { modifier: "fitContent" } },
+                        { title: _("Status"), sortable: true, props: { modifier: "fitContent" } },
+                        { title: "", props: { screenReaderText: _("Actions"), modifier: "fitContent" } },
+                    ]}
+                    sortBy={{ index: 0, direction: SortByDirection.desc }}
+                    sortMethod={sortMethod}
+                    emptyCaption={_("No scans match the search")}
+                    isEmptyStateInTable
+                    onRowClick={(_ev, row) => cockpit.location.go(["results", String(row.props?.key)])}
+                    rows={shown.map(summary => {
+                        const date = parseTimestamp(summary.timestamp);
+                        return {
+                            props: { key: summary.id },
+                            columns: [
+                                {
+                                    title: date ? timeformat.dateTime(date) : summary.timestamp,
+                                    props: { className: "oscap-table-nowrap" },
+                                },
+                                {
+                                    title: (
+                                        <>
+                                            {summary.profile_title || summary.profile_id}
+                                            {summary.tailored && <> {" "}<TailoredLabel /></>}
+                                        </>
+                                    ),
+                                },
+                                { title: <ScoreLabel score={summary.score} /> },
+                                { title: <CountLabels counts={summary.counts} /> },
+                                { title: <ScanStatusLabel status={summary.status} /> },
+                                {
+                                    title: (
+                                        <span onClick={ev => ev.stopPropagation()} onKeyDown={ev => ev.stopPropagation()}>
+                                            <KebabDropdown
+                                                toggleButtonId={`result-actions-${summary.id}`}
+                                                dropdownItems={[
+                                                    <DropdownItem
+key="view"
+                                                                  onClick={() => cockpit.location.go(["results", summary.id])}
+                                                    >
+                                                        {_("View details")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="report" isDisabled={!summary.has_arf}
+                                                                  onClick={() => guarded(() => downloadReport(summary.id))}
+                                                    >
+                                                        {_("Download HTML report")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="arf" isDisabled={!summary.has_arf}
+                                                                  onClick={() => guarded(() => downloadArf(summary.id))}
+                                                    >
+                                                        {_("Download ARF results")}
+                                                    </DropdownItem>,
+                                                    <DropdownItem
+key="delete" isDanger isDisabled={app.superuser === false}
+                                                                  onClick={() => remove(summary)}
+                                                    >
+                                                        {_("Delete")}
+                                                    </DropdownItem>,
+                                                ]}
+                                            />
+                                        </span>
+                                    ),
+                                    props: { className: "pf-v6-c-table__action" },
+                                },
+                            ],
+                        };
+                    })}
+                />
+            </StackItem>
+        </Stack>
     );
 };

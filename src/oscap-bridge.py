@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
-"""Cockpit oscap bridge — typed dispatcher for OpenSCAP operations."""
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Cockpit OpenSCAP bridge.
+
+A single, dependency-free script that the cockpit-oscap frontend spawns
+(via ``python3 -c``) with a command name and arguments.  Every command
+prints exactly one JSON document to stdout; long running commands
+(``scan`` and ``remediate``) additionally stream newline-delimited JSON
+progress objects before the final ``{"type": "done", ...}`` line.
+
+Errors are reported as ``{"error": "..."}`` with exit status 1.
+
+The script must stay compatible with Python 3.9 (RHEL 9 / CentOS Stream 9).
+"""
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -11,22 +24,26 @@ import signal
 import subprocess
 import sys
 import syslog
+import tempfile
+import time
 import traceback
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime
-from enum import StrEnum
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, ClassVar, TypedDict
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 # ---------------------------------------------------------------------------
-# Logging — writes to syslog so errors are visible in `journalctl`
+# Logging — goes to syslog so that problems are visible in `journalctl`
 # ---------------------------------------------------------------------------
+
 
 class _SyslogHandler(logging.Handler):
-    """Minimal syslog handler that maps Python log levels to syslog priorities."""
+    """Minimal syslog handler mapping Python log levels to syslog priorities."""
 
-    _PRIORITY_MAP: dict[int, int] = {
+    _PRIORITY_MAP: ClassVar[dict[int, int]] = {
         logging.DEBUG: syslog.LOG_DEBUG,
         logging.INFO: syslog.LOG_INFO,
         logging.WARNING: syslog.LOG_WARNING,
@@ -35,13 +52,10 @@ class _SyslogHandler(logging.Handler):
     }
 
     def emit(self, record: logging.LogRecord) -> None:
-        priority = self._PRIORITY_MAP.get(record.levelno, syslog.LOG_INFO)
-        msg = self.format(record)
-        syslog.syslog(priority, msg)
+        syslog.syslog(self._PRIORITY_MAP.get(record.levelno, syslog.LOG_INFO), self.format(record))
 
 
 def _setup_logging() -> logging.Logger:
-    """Configure logging to syslog with cockpit-oscap prefix."""
     syslog.openlog("cockpit-oscap", syslog.LOG_PID, syslog.LOG_DAEMON)
     logger = logging.getLogger("cockpit-oscap")
     logger.setLevel(logging.DEBUG)
@@ -53,549 +67,663 @@ def _setup_logging() -> logging.Logger:
 
 log = _setup_logging()
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MIN_ARGC: int = 2  # script name + command
-DEFAULT_DATASTREAM: str = "/usr/share/xml/scap/ssg/content/ssg-fedora-ds.xml"
-DATA_DIR: Path = Path(os.environ.get("COCKPIT_OSCAP_DATA_DIR", "/var/lib/cockpit-oscap"))
-RESULTS_DIR: Path = DATA_DIR / "results"
-TAILORING_DIR: Path = DATA_DIR / "tailoring"
-CONFIG_PATH: Path = DATA_DIR / "config.json"
+API_VERSION = 2
+
+DATA_DIR = Path(os.environ.get("COCKPIT_OSCAP_DATA_DIR", "/var/lib/cockpit-oscap"))
+RESULTS_DIR = DATA_DIR / "results"
+TAILORING_DIR = DATA_DIR / "tailoring"
+REMEDIATION_DIR = DATA_DIR / "remediation"
+CONFIG_PATH = DATA_DIR / "config.json"
+SCAN_STATE_PATH = DATA_DIR / "scan-state.json"
+SCAN_LOCK_PATH = DATA_DIR / "scan.lock"
+
+SSG_CONTENT_DIR = Path(os.environ.get("COCKPIT_OSCAP_CONTENT_DIR", "/usr/share/xml/scap/ssg/content"))
+OS_RELEASE_PATH = Path(os.environ.get("COCKPIT_OSCAP_OS_RELEASE", "/etc/os-release"))
+
+TIMER_UNIT = "cockpit-oscap-scan.timer"
+SERVICE_UNIT = "cockpit-oscap-scan.service"
+TIMER_OVERRIDE_DIR = Path(f"/etc/systemd/system/{TIMER_UNIT}.d")
+
+DEFAULT_MAX_RESULTS = 30
+MIN_MAX_RESULTS = 1
+MAX_MAX_RESULTS = 500
+DEFAULT_TIMER_FREQUENCY = "weekly"
+
+CMD_TIMEOUT = 60
+FIX_TIMEOUT = 300
+REPORT_TIMEOUT = 300
+REMEDIATE_RULE_TIMEOUT = 600
+
+# oscap xccdf eval exit codes: 0 = all pass, 1 = error, 2 = at least one rule failed (normal)
+OSCAP_EXIT_ERROR = 1
+ERROR_TAIL = 800
+STATE_WRITE_INTERVAL = 0.25
+
+RESULT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
+XCCDF_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,300}$")
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+MAX_DAY_OF_MONTH = 28
+HOURS_PER_DAY = 24
+MINUTES_PER_HOUR = 60
+GROUP_CATEGORY_DEPTH = 2
+REQUIRED_PAIR = 2
+
+# XCCDF / datastream / ARF namespaces
+NS_DS = "http://scap.nist.gov/schema/scap/source/1.2"
+NS_XCCDF = "http://checklists.nist.gov/xccdf/1.2"
+NS_ARF = "urn:oasis:names:tc:dfi:2.0:asset-report-format:1.1"
+NS_HTML = "http://www.w3.org/1999/xhtml"
+
+
+def _x(tag: str) -> str:
+    """Return a namespaced XCCDF tag."""
+    return f"{{{NS_XCCDF}}}{tag}"
+
+
+TAG_BENCHMARK = _x("Benchmark")
+TAG_GROUP = _x("Group")
+TAG_RULE = _x("Rule")
+TAG_VALUE = _x("Value")
+TAG_PROFILE = _x("Profile")
+TAG_TITLE = _x("title")
+TAG_DESCRIPTION = _x("description")
+TAG_RATIONALE = _x("rationale")
+TAG_WARNING = _x("warning")
+TAG_SELECT = _x("select")
+TAG_SET_VALUE = _x("set-value")
+TAG_REFINE_VALUE = _x("refine-value")
+TAG_TEST_RESULT = _x("TestResult")
+TAG_TAILORING = _x("Tailoring")
+TAG_RULE_RESULT = _x("rule-result")
+TAG_RESULT = _x("result")
+TAG_MESSAGE = _x("message")
+
+RESULT_PASS = "pass"  # noqa: S105
+RESULT_FAIL = "fail"
+RESULT_ERROR = "error"
+RESULT_NOTSELECTED = "notselected"
+RESULT_FIXED = "fixed"
+SCORED_RESULTS = (RESULT_PASS, RESULT_FAIL, RESULT_ERROR)
+RESULT_KINDS = ("pass", "fail", "error", "notapplicable", "notchecked", "informational", "fixed", "unknown")
+
+ACTION_SELECT = "select"
+ACTION_UNSELECT = "unselect"
+ACTION_SET_VALUE = "set-value"
+ACTION_REFINE_VALUE = "refine-value"
+TAILORING_ACTIONS = (ACTION_SELECT, ACTION_UNSELECT, ACTION_SET_VALUE, ACTION_REFINE_VALUE)
+TAILORING_ID = "xccdf_org.cockpit-project.oscap_tailoring_default"
+TAILORED_SUFFIX = "_customized"
+
+RISK_LOW = "low"
+RISK_MEDIUM = "medium"
+RISK_HIGH = "high"
 
 # ---------------------------------------------------------------------------
-# Enums
+# Typed shapes shared with src/types.ts — keep both in sync
 # ---------------------------------------------------------------------------
 
-
-class Command(StrEnum):
-    """Supported bridge commands."""
-
-    DETECT_BACKEND = "detect-backend"
-    LIST_PROFILES = "list-profiles"
-    PROFILE_RULES = "profile-rules"
-    SCAN = "scan"
-    GENERATE_FIX = "generate-fix"
-    APPLY_FIX = "apply-fix"
-    MANAGE_TIMER = "manage-timer"
-    CREATE_TAILORING = "create-tailoring"
-    PARSE_TAILORING = "parse-tailoring"
+JsonDict = dict[str, object]
 
 
-class RiskLevel(StrEnum):
-    """Risk classification for remediation scripts."""
-
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
-class RuleResult(StrEnum):
-    """Possible results for a single SCAP rule."""
-
-    PASS = "pass"  # noqa: S105
-    FAIL = "fail"
-    ERROR = "error"
-    NOTAPPLICABLE = "notapplicable"
-    NOTCHECKED = "notchecked"
-    NOTSELECTED = "notselected"
-    INFORMATIONAL = "informational"
-    FIXED = "fixed"
-
-
-# ---------------------------------------------------------------------------
-# TypedDicts
-# ---------------------------------------------------------------------------
-
-
-class OscapInfo(TypedDict):
-    """Information about the oscap binary."""
-
+class ToolInfo(TypedDict):
     version: str
     path: str
 
 
-class ComplyctlInfo(TypedDict):
-    """Information about the complyctl binary."""
-
-    version: str
+class DatastreamInfo(TypedDict):
     path: str
+    name: str
+    product: str
+
+
+class OsInfo(TypedDict):
+    id: str
+    version_id: str
+    pretty_name: str
 
 
 class ContentInfo(TypedDict):
-    """Information about installed SCAP content."""
-
     datastream_path: str
     present: bool
+    source: str
+    available: list[DatastreamInfo]
+    os: OsInfo
 
 
 class BackendInfo(TypedDict):
-    """Response shape for detect-backend command."""
-
-    oscap: OscapInfo
-    complyctl: ComplyctlInfo | None
+    api_version: int
+    oscap: ToolInfo | None
+    complyctl: ToolInfo | None
     content: ContentInfo
-
-
-class ErrorResponse(TypedDict):
-    """Response shape for error conditions."""
-
-    error: str
+    privileged: bool
+    data_dir: str
 
 
 class ProfileInfo(TypedDict):
-    """Profile metadata from an XCCDF datastream."""
-
     id: str
     title: str
     description: str
     rule_count: int
+    extends: str | None
+    tailoring_path: str | None
+    tailored_profile_id: str | None
 
 
 class RuleInfo(TypedDict):
-    """Rule metadata from an XCCDF datastream."""
-
     id: str
     title: str
     severity: str
     description: str
     selected: bool
+    group: str
+    group_path: list[str]
+    has_fix: bool
+
+
+class ValueOption(TypedDict):
+    selector: str
+    value: str
+
+
+class ValueInfo(TypedDict):
+    id: str
+    title: str
+    description: str
+    type: str
+    default: str
+    value: str
+    selector: str
+    set_value: str | None
+    options: list[ValueOption]
+
+
+class ProfileRules(TypedDict):
+    profile_id: str
+    title: str
+    rules: list[RuleInfo]
+    values: list[ValueInfo]
+
+
+class Reference(TypedDict):
+    href: str
+    text: str
+
+
+class Ident(TypedDict):
+    system: str
+    text: str
+
+
+class RuleDetail(TypedDict):
+    id: str
+    title: str
+    severity: str
+    description: str
+    rationale: str
+    warnings: list[str]
+    references: list[Reference]
+    idents: list[Ident]
+    group_path: list[str]
+    has_fix: bool
+    fix_systems: list[str]
 
 
 class RuleResultItem(TypedDict):
-    """A single rule's evaluation result from an ARF report."""
-
     rule_id: str
     result: str
     title: str
     severity: str
+    group: str
+    message: str
 
 
 class ScanResult(TypedDict):
-    """Response shape for the scan command."""
-
+    id: str
+    timestamp: str
+    start_time: str
+    end_time: str
+    profile_id: str
+    profile_title: str
+    base_profile_id: str
+    benchmark_id: str
+    benchmark_version: str
+    datastream: str
+    tailoring_path: str | None
+    tailored: bool
+    test_result_id: str
+    status: str
     score: float
+    xccdf_score: float | None
+    counts: dict[str, int]
     results: list[RuleResultItem]
     arf_path: str
     json_path: str
+
+
+class ResultSummary(TypedDict):
+    id: str
     timestamp: str
     profile_id: str
-    status: str
-
-
-class ParsedArfResult(TypedDict):
-    """Internal parsed ARF result (score + rule results)."""
-
+    profile_title: str
     score: float
-    results: list[RuleResultItem]
+    counts: dict[str, int]
+    total: int
+    status: str
+    tailored: bool
+    has_arf: bool
 
 
 class FixRuleInfo(TypedDict):
-    """Per-rule fix snippet with risk classification."""
-
     id: str
+    title: str
     fix_snippet: str
     risk_level: str
+    risk_reason: str
+    has_fix: bool
 
 
 class FixInfo(TypedDict):
-    """Response shape for the generate-fix command."""
-
+    result_id: str
     script: str
     rules: list[FixRuleInfo]
 
 
-class ApplyResult(TypedDict):
-    """Response shape for the apply-fix command."""
-
+class RuleRemediation(TypedDict):
+    rule_id: str
     success: bool
+    exit_status: int
     output: str
     errors: str
 
 
-class ScanStatus(StrEnum):
-    """Scan completion status."""
-
-    COMPLETE = "complete"
-    INTERRUPTED = "interrupted"
+class RemediateResult(TypedDict):
+    result_id: str
+    success: bool
+    script_path: str
+    rules: list[RuleRemediation]
 
 
 class TailoringModification(TypedDict, total=False):
-    """A single rule modification inside a tailoring profile.
-
-    Fields:
-        rule_id: XCCDF rule or value idref.
-        action: One of "enable", "disable", "set-value".
-        value: Required when action is "set-value".
-    """
-
-    rule_id: str
+    idref: str
     action: str
     value: str
+    selector: str
 
 
-class TailoringResult(TypedDict):
-    """Response shape for the create-tailoring command."""
-
-    tailoring_xml: str
+class TailoringInfo(TypedDict):
     path: str
-
-
-class ParsedTailoring(TypedDict):
-    """Response shape for the parse-tailoring command."""
-
-    base_profile: str
+    profile_id: str
+    base_profile_id: str
+    title: str
+    benchmark_href: str
     modifications: list[TailoringModification]
+    tailoring_xml: str
+    warning: str
 
 
 class TimerStatus(TypedDict):
-    """Response shape for manage-timer status/enable/disable/configure."""
-
     status: str
+    enabled: bool
+    installed: bool
     next_run: str
-    frequency: str
+    last_run: str
+    calendar: str
+    service_state: str
+    service_result: str
+    last_scan_finished: str
 
 
-class TimerConfig(TypedDict, total=False):
-    """Configuration payload for manage-timer configure action.
-
-    Fields:
-        frequency: One of "daily", "weekly", "monthly" or a systemd calendar spec.
-        day: Optional day-of-week (e.g. "Mon") for weekly frequency.
-        time: Optional time string (e.g. "03:00") for daily/weekly.
-        profile_id: Optional XCCDF profile ID to set as active_profile.
-    """
-
-    frequency: str
-    day: str
-    time: str
-    profile_id: str
+class CalendarCheck(TypedDict):
+    valid: bool
+    normalized: str
+    next_elapse: str
+    error: str
 
 
-# ---------------------------------------------------------------------------
-# XCCDF XML namespace constants
-# ---------------------------------------------------------------------------
+class Config(TypedDict, total=False):
+    active_profile: str
+    datastream: str
+    max_results: int
+    tailorings: dict[str, str]
 
-NS_DS: str = "http://scap.nist.gov/schema/scap/source/1.2"
-NS_XCCDF: str = "http://checklists.nist.gov/xccdf/1.2"
-NS_ARF: str = "urn:oasis:names:tc:dfi:2.0:asset-report-format:1.1"
 
-# Convenience map for ElementTree findall/find
-_NS: dict[str, str] = {"ds": NS_DS, "xccdf": NS_XCCDF, "arf": NS_ARF}
-
-# Default maximum number of scan results to keep on disk
-DEFAULT_MAX_RESULTS: int = 30
-
-# oscap exit code 2 means "some rules failed" — this is normal, not an error
-_OSCAP_EXIT_RULES_FAILED: int = 2
-
-# Type alias for JSON output
-_JsonOutput = (
-    BackendInfo | ErrorResponse | ScanResult | FixInfo | ApplyResult
-    | TailoringResult | ParsedTailoring | TimerStatus
-    | list[ProfileInfo] | list[RuleInfo]
-)
+class BridgeError(Exception):
+    """A user-facing error; reported as ``{"error": message}`` with exit status 1."""
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Output and subprocess helpers
 # ---------------------------------------------------------------------------
 
 
-def output_json(data: _JsonOutput) -> None:
-    """Write a JSON response to stdout."""
-    json.dump(data, sys.stdout)
+def output_json(data: object) -> None:
+    """Write one JSON document (plus newline) to stdout."""
+    sys.stdout.write(json.dumps(data))
     sys.stdout.write("\n")
     sys.stdout.flush()
 
 
 def output_error(message: str) -> None:
-    """Write an error JSON response to stdout and exit with code 1."""
-    log.error("output_error: %s", message)
-    output_json(ErrorResponse(error=message))
+    """Write an error JSON document to stdout and exit with status 1."""
+    log.error("error: %s", message)
+    output_json({"error": message})
     sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# Risk classification
-# ---------------------------------------------------------------------------
-
-# Compiled patterns for remediation risk heuristic (checked in order).
-_HIGH_RISK_RE: re.Pattern[str] = re.compile(
-    r"/etc/sudoers"
-    r"|/etc/pam\.d/"
-    r"|/etc/firewalld/"
-    r"|/etc/selinux/"
-    r"|(?:^|\s)firewall-cmd\b"
-    r"|(?:^|\s)semanage\b"
-    r"|(?:^|\s)authselect\b"
-    r"|(?:sed|echo|cat|tee|cp)\b.*\bsshd_config\b",
-    re.MULTILINE,
-)
-
-_MEDIUM_RISK_RE: re.Pattern[str] = re.compile(
-    r"(?:^|\s)systemctl\b"
-    r"|/etc/audit/"
-    r"|/etc/rsyslog"
-    r"|/etc/cron",
-    re.MULTILINE,
-)
-
-# Pattern to extract per-rule fix blocks from oscap-generated bash scripts.
-# oscap emits: # BEGIN fix (<rule_id>) for '<short_name>'
-_FIX_BLOCK_RE: re.Pattern[str] = re.compile(
-    r"^#+ BEGIN fix \(([^)]+)\).*?$"
-    r"(.*?)"
-    r"^#+ END fix \(\1\)",
-    re.MULTILINE | re.DOTALL,
-)
-
-
-def classify_risk(fix_script: str) -> str:
-    """Classify the risk level of a remediation script snippet.
-
-    Returns a RiskLevel string value: "high", "medium", or "low".
-    """
-    if _HIGH_RISK_RE.search(fix_script):
-        return RiskLevel.HIGH
-    if _MEDIUM_RISK_RE.search(fix_script):
-        return RiskLevel.MEDIUM
-    return RiskLevel.LOW
-
-
-def _parse_fix_script(script: str) -> list[FixRuleInfo]:
-    """Parse an oscap-generated bash fix script into per-rule snippets.
-
-    oscap generates blocks delimited by:
-        # BEGIN fix (<rule_id>) for '<short_name>'
-        ...commands...
-        # END fix (<rule_id>) for '<short_name>'
-
-    Each block is classified by risk level.
-    """
-    rules: list[FixRuleInfo] = []
-    for match in _FIX_BLOCK_RE.finditer(script):
-        rule_id = match.group(1)
-        snippet = match.group(2).strip()
-        risk = classify_risk(snippet)
-        rules.append(FixRuleInfo(id=rule_id, fix_snippet=snippet, risk_level=risk))
-    return rules
-
-
-def run_cmd(argv: list[str]) -> tuple[int, str, str]:
-    """Run a subprocess and return (returncode, stdout, stderr)."""
-    result = subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+def run_cmd(argv: list[str], *, timeout: int = CMD_TIMEOUT) -> tuple[int, str, str]:
+    """Run a command and return (exit status, stdout, stderr)."""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise BridgeError(f"{argv[0]}: command not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise BridgeError(f"{argv[0]} timed out after {timeout} seconds") from exc
     return result.returncode, result.stdout, result.stderr
 
 
-def get_oscap_version() -> OscapInfo:
-    """Detect the installed oscap binary version and path."""
-    oscap_path = shutil.which("oscap")
-    if oscap_path is None:
-        output_error("oscap binary not found in PATH")
-        msg = "unreachable"
-        raise SystemExit(msg)  # unreachable; satisfies mypy
-
-    rc, stdout, _stderr = run_cmd([oscap_path, "--version"])
-    if rc != 0:
-        output_error(f"oscap --version failed with exit code {rc}")
-        msg = "unreachable"
-        raise SystemExit(msg)
-
-    # First line is typically: "OpenSCAP command line tool (oscap) X.Y.Z"
-    version = "unknown"
-    for line in stdout.splitlines():
-        if "oscap" in line.lower():
-            parts = line.strip().split()
-            if parts:
-                version = parts[-1]
-            break
-
-    return OscapInfo(version=version, path=oscap_path)
+def _now_utc() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
 
-def get_complyctl_info() -> ComplyctlInfo | None:
-    """Detect the installed complyctl binary, if any."""
-    complyctl_path = shutil.which("complyctl")
-    if complyctl_path is None:
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def _ensure_dir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise BridgeError(f"administrative access is required to write to {path}") from exc
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write a file atomically (temporary file + rename)."""
+    _ensure_dir(path.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        Path(tmp_name).chmod(0o644)
+        Path(tmp_name).replace(path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def _read_json_file(path: Path) -> JsonDict | None:
+    """Read a JSON object from a file; return None when missing or invalid."""
+    try:
+        with path.open() as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
         return None
-
-    rc, stdout, _stderr = run_cmd([complyctl_path, "version"])
-    if rc != 0:
-        return ComplyctlInfo(version="unknown", path=complyctl_path)
-
-    version = stdout.strip().splitlines()[0] if stdout.strip() else "unknown"
-    return ComplyctlInfo(version=version, path=complyctl_path)
+    return data if isinstance(data, dict) else None
 
 
-def get_content_info() -> ContentInfo:
-    """Detect whether the default SCAP content datastream is installed."""
-    ds_path = Path(DEFAULT_DATASTREAM)
-    return ContentInfo(
-        datastream_path=str(ds_path),
-        present=ds_path.is_file(),
+def _parse_json_arg(text: str, what: str) -> object:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BridgeError(f"invalid {what} JSON: {exc}") from exc
+
+
+def _opt(args: list[str], name: str) -> str | None:
+    """Return the value following ``--name`` in args, or None."""
+    for i, arg in enumerate(args):
+        if arg == name and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def _positional(args: list[str]) -> list[str]:
+    """Return the positional (non ``--option value``) arguments."""
+    result: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg.startswith("--"):
+            skip = arg in ("--datastream", "--tailoring-path", "--rules", "--source")
+        else:
+            result.append(arg)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+def load_config() -> Config:
+    """Read config.json, migrating legacy keys, tolerating a missing/invalid file."""
+    raw = _read_json_file(CONFIG_PATH) or {}
+    config: Config = {}
+
+    active = raw.get("active_profile")
+    if isinstance(active, str) and active:
+        config["active_profile"] = active
+    datastream = raw.get("datastream")
+    if isinstance(datastream, str) and datastream:
+        config["datastream"] = datastream
+    max_results = raw.get("max_results")
+    if isinstance(max_results, int) and MIN_MAX_RESULTS <= max_results <= MAX_MAX_RESULTS:
+        config["max_results"] = max_results
+
+    tailorings: dict[str, str] = {}
+    raw_tailorings = raw.get("tailorings")
+    if isinstance(raw_tailorings, dict):
+        tailorings.update({k: v for k, v in raw_tailorings.items() if isinstance(k, str) and isinstance(v, str)})
+    # legacy layout: "tailoring_<profile id>": "<path>"
+    for key, value in raw.items():
+        if key.startswith("tailoring_") and isinstance(value, str):
+            tailorings.setdefault(key[len("tailoring_"):], value)
+    if tailorings:
+        config["tailorings"] = tailorings
+    return config
+
+
+def save_config(config: Config) -> None:
+    _atomic_write(CONFIG_PATH, json.dumps(config, indent=2, sort_keys=True) + "\n")
+
+
+def _config_patch(config: Config, patch: JsonDict) -> Config:
+    """Apply a JSON patch (null deletes a key) to the user-editable config keys."""
+    for key, value in patch.items():
+        if key in ("active_profile", "datastream"):
+            if value is None or value == "":
+                config.pop(key, None)  # type: ignore[misc]
+            elif isinstance(value, str):
+                if key == "active_profile" and not XCCDF_ID_RE.match(value):
+                    raise BridgeError(f"invalid profile id: {value}")
+                config[key] = value  # type: ignore[literal-required]
+            else:
+                raise BridgeError(f"{key} must be a string")
+        elif key == "max_results":
+            if value is None:
+                config.pop("max_results", None)
+            elif isinstance(value, int) and not isinstance(value, bool) and \
+                    MIN_MAX_RESULTS <= value <= MAX_MAX_RESULTS:
+                config["max_results"] = value
+            else:
+                raise BridgeError(f"max_results must be an integer between {MIN_MAX_RESULTS} and {MAX_MAX_RESULTS}")
+        else:
+            raise BridgeError(f"unknown configuration key: {key}")
+    return config
+
+
+def cmd_get_config(_args: list[str]) -> None:
+    output_json(load_config())
+
+
+def cmd_set_config(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("set-config requires a JSON object argument")
+    patch = _parse_json_arg(args[0], "configuration")
+    if not isinstance(patch, dict):
+        raise BridgeError("configuration patch must be a JSON object")
+    config = _config_patch(load_config(), patch)
+    save_config(config)
+    output_json(config)
+
+
+# ---------------------------------------------------------------------------
+# Backend / content detection
+# ---------------------------------------------------------------------------
+
+
+def _read_os_release() -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        text = OS_RELEASE_PATH.read_text()
+    except OSError:
+        return values
+    for line in text.splitlines():
+        if "=" not in line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _candidate_products(os_release: dict[str, str]) -> list[str]:
+    """Return SSG product names that match this OS, most specific first."""
+    os_id = os_release.get("ID", "").lower()
+    version = os_release.get("VERSION_ID", "")
+    major = version.split(".")[0]
+    compact = version.replace(".", "")
+    candidates: list[str] = []
+
+    def add(*names: str) -> None:
+        for name in names:
+            if name and name not in candidates:
+                candidates.append(name)
+
+    products = {
+        "fedora": ["fedora"],
+        "rhel": [f"rhel{major}"],
+        "centos": [f"cs{major}", f"centos{major}", f"rhel{major}"],
+        "almalinux": [f"almalinux{major}", f"rhel{major}"],
+        "rocky": [f"rl{major}", f"rocky{major}", f"rhel{major}"],
+        "ol": [f"ol{major}"],
+        "debian": [f"debian{major}"],
+        "ubuntu": [f"ubuntu{compact}"],
+        "suse": ["opensuse"],
+        "sles": [f"sle{major}"],
+        "sled": [f"sle{major}"],
+        "sle_hpc": [f"sle{major}"],
+        "amzn": ["al2023" if major == "2023" else f"amzn{major}"],
+    }
+    for ident in [os_id, *os_release.get("ID_LIKE", "").lower().split()]:
+        if ident != os_id and ident in ("debian", "ubuntu"):
+            continue  # derivatives do not share Debian/Ubuntu version numbers
+        key = "suse" if ident.startswith("opensuse") else ident
+        add(*products.get(key, []))
+    return candidates
+
+
+def _natural_key(text: str) -> list[object]:
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+
+def _available_datastreams() -> list[DatastreamInfo]:
+    found: list[DatastreamInfo] = []
+    if not SSG_CONTENT_DIR.is_dir():
+        return found
+    for path in sorted(SSG_CONTENT_DIR.glob("ssg-*-ds.xml"), key=lambda p: _natural_key(p.name)):
+        product = path.name[len("ssg-"):-len("-ds.xml")]
+        found.append(DatastreamInfo(path=str(path), name=path.name, product=product))
+    return found
+
+
+def detect_content(config: Config | None = None) -> ContentInfo:
+    """Pick the SCAP datastream for this system (config override > OS match > any)."""
+    config = load_config() if config is None else config
+    os_release = _read_os_release()
+    available = _available_datastreams()
+    os_info = OsInfo(
+        id=os_release.get("ID", ""),
+        version_id=os_release.get("VERSION_ID", ""),
+        pretty_name=os_release.get("PRETTY_NAME", ""),
     )
 
+    override = config.get("datastream")
+    if override and Path(override).is_file():
+        return ContentInfo(datastream_path=override, present=True, source="config", available=available, os=os_info)
 
-# ---------------------------------------------------------------------------
-# ARF result parsing
-# ---------------------------------------------------------------------------
+    by_product = {ds["product"]: ds for ds in available}
+    for product in _candidate_products(os_release):
+        if product in by_product:
+            path = by_product[product]["path"]
+            return ContentInfo(datastream_path=path, present=True, source="detected", available=available, os=os_info)
 
+    if available:
+        # no content matches this OS: fall back to the newest product shipped on the system
+        path = available[-1]["path"]
+        return ContentInfo(datastream_path=path, present=True, source="fallback", available=available, os=os_info)
 
-def _parse_arf_results(arf_path: str) -> ParsedArfResult:
-    """Parse an ARF XML file and return structured scan results.
-
-    Returns a ParsedArfResult with 'score' (float) and 'results' (list of RuleResultItem).
-    The score is computed as: pass_count / (pass_count + fail_count + error_count) * 100.
-    Rules with notapplicable/notchecked/notselected/informational results are excluded
-    from the score denominator.
-    """
-    tree = ET.parse(arf_path)  # noqa: S314
-    root = tree.getroot()
-
-    # Find TestResult element — may be inside arf:reports/arf:report/arf:content
-    # or directly (depending on output format)
-    test_result: ET.Element | None = None
-    for elem in root.iter(f"{{{NS_XCCDF}}}TestResult"):
-        test_result = elem
-        break
-
-    if test_result is None:
-        return ParsedArfResult(score=0.0, results=[])
-
-    # Build rule_id → title map from the XCCDF Benchmark's Rule elements.
-    # ARF rule-result elements don't contain titles inline — they must be
-    # cross-referenced with the Benchmark's Rule definitions.
-    rule_titles: dict[str, str] = {}
-    for rule_el in root.iter(f"{{{NS_XCCDF}}}Rule"):
-        rid = rule_el.get("id", "")
-        title_el = rule_el.find(f"{{{NS_XCCDF}}}title")
-        if rid and title_el is not None and title_el.text:
-            rule_titles[rid] = title_el.text.strip()
-
-    results: list[RuleResultItem] = []
-    pass_count = 0
-    fail_count = 0
-    error_count = 0
-
-    for rr in test_result.findall(f"{{{NS_XCCDF}}}rule-result"):
-        rule_id = rr.get("idref", "")
-        severity = rr.get("severity", "unknown")
-
-        result_el = rr.find(f"{{{NS_XCCDF}}}result")
-        result_text = result_el.text.strip() if result_el is not None and result_el.text else "unknown"
-
-        # Skip rules not selected by the profile
-        if result_text == RuleResult.NOTSELECTED:
-            continue
-
-        title = rule_titles.get(rule_id, "")
-
-        results.append(RuleResultItem(
-            rule_id=rule_id,
-            result=result_text,
-            title=title,
-            severity=severity,
-        ))
-
-        # Tally for score computation
-        if result_text == RuleResult.PASS:
-            pass_count += 1
-        elif result_text == RuleResult.FAIL:
-            fail_count += 1
-        elif result_text == RuleResult.ERROR:
-            error_count += 1
-        # notapplicable, notchecked, informational, fixed — excluded from score
-
-    denominator = pass_count + fail_count + error_count
-    score = (pass_count / denominator * 100.0) if denominator > 0 else 0.0
-
-    return ParsedArfResult(score=score, results=results)
+    return ContentInfo(datastream_path="", present=False, source="none", available=available, os=os_info)
 
 
-def _profile_short_name(profile_id: str) -> str:
-    """Extract a short name from a full XCCDF profile ID.
-
-    E.g., "xccdf_org.ssgproject.content_profile_ospp" -> "ospp"
-    """
-    # Take everything after the last underscore in _profile_ suffix
-    match = re.search(r"_profile_(.+)$", profile_id)
-    if match:
-        return match.group(1)
-    # Fallback: last segment after any underscore
-    parts = profile_id.rsplit("_", maxsplit=1)
-    return parts[-1] if parts else profile_id
+def resolve_datastream(explicit: str | None, config: Config | None = None) -> str:
+    """Return the datastream path to use, validating that it exists."""
+    if explicit:
+        if not Path(explicit).is_file():
+            raise BridgeError(f"datastream not found: {explicit}")
+        return explicit
+    content = detect_content(config)
+    if not content["present"]:
+        raise BridgeError("no SCAP content found; install scap-security-guide")
+    return content["datastream_path"]
 
 
-def _save_scan_result(
-    *,
-    arf_source: str,
-    parsed: ParsedArfResult,
-    profile_id: str,
-    results_dir: Path,
-) -> tuple[str, str]:
-    """Save ARF XML and parsed JSON to the results directory.
-
-    Returns (arf_dest_path, json_dest_path) as strings.
-    Filenames follow: YYYY-MM-DDTHHMMSS-profileshortname.{arf.xml,json}
-    """
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H%M%S")
-    short_name = _profile_short_name(profile_id)
-    base = f"{timestamp}-{short_name}"
-
-    arf_dest = results_dir / f"{base}.arf.xml"
-    json_dest = results_dir / f"{base}.json"
-
-    # Copy ARF XML
-    shutil.copy2(arf_source, str(arf_dest))
-
-    # Write parsed JSON
-    with json_dest.open("w") as f:
-        json.dump(parsed, f, indent=2)
-        f.write("\n")
-
-    return str(arf_dest), str(json_dest)
+def get_oscap_info() -> ToolInfo | None:
+    oscap_path = shutil.which("oscap")
+    if oscap_path is None:
+        return None
+    rc, stdout, _stderr = run_cmd([oscap_path, "--version"])
+    version = "unknown"
+    if rc == 0:
+        for line in stdout.splitlines():
+            if "(oscap)" in line:
+                version = line.strip().split()[-1]
+                break
+    return ToolInfo(version=version, path=oscap_path)
 
 
-def _prune_old_results(results_dir: Path, *, max_results: int = DEFAULT_MAX_RESULTS) -> None:
-    """Remove oldest scan result pairs beyond max_results.
-
-    Files are sorted by name (which starts with a timestamp), so alphabetical
-    order equals chronological order.
-    """
-    arf_files = sorted(results_dir.glob("*.arf.xml"))
-    json_files = sorted(results_dir.glob("*.json"))
-
-    # Prune ARF files beyond max
-    while len(arf_files) > max_results:
-        oldest = arf_files.pop(0)
-        oldest.unlink(missing_ok=True)
-
-    # Prune JSON files beyond max
-    while len(json_files) > max_results:
-        oldest = json_files.pop(0)
-        oldest.unlink(missing_ok=True)
+def get_complyctl_info() -> ToolInfo | None:
+    path = shutil.which("complyctl")
+    if path is None:
+        return None
+    try:
+        rc, stdout, _stderr = run_cmd([path, "version"])
+    except BridgeError:
+        return ToolInfo(version="unknown", path=path)
+    version = stdout.strip().splitlines()[0] if rc == 0 and stdout.strip() else "unknown"
+    return ToolInfo(version=version, path=path)
 
 
-def _emit_progress(current: int, total: int, message: str) -> None:
-    """Write a progress JSON line to stderr for the frontend to consume."""
-    progress = int(current / total * 100) if total > 0 else 0
-    progress_obj = {"progress": progress, "message": message}
-    sys.stderr.write(json.dumps(progress_obj) + "\n")
-    sys.stderr.flush()
+def _require_oscap() -> str:
+    path = shutil.which("oscap")
+    if path is None:
+        raise BridgeError("oscap binary not found; install openscap-scanner")
+    return path
+
+
+def cmd_detect_backend(_args: list[str]) -> None:
+    if DATA_DIR.is_dir() and os.access(DATA_DIR, os.W_OK):
+        reconcile_scan_state()
+    output_json(BackendInfo(
+        api_version=API_VERSION,
+        oscap=get_oscap_info(),
+        complyctl=get_complyctl_info(),
+        content=detect_content(),
+        privileged=os.geteuid() == 0,
+        data_dir=str(DATA_DIR),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -603,766 +731,1310 @@ def _emit_progress(current: int, total: int, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_xccdf_benchmark(tree: ET.ElementTree[ET.Element]) -> ET.Element | None:
-    """Locate the XCCDF Benchmark element inside a datastream XML."""
-    # Try datastream-wrapped structure first:
-    # <ds:data-stream-collection>/<ds:data-stream>/<ds:component>/<xccdf:Benchmark>
-    for component in tree.iter(f"{{{NS_DS}}}component"):
-        benchmark = component.find(f"{{{NS_XCCDF}}}Benchmark")
-        if benchmark is not None:
-            return benchmark
+def _text(el: ET.Element | None) -> str:
+    """Return the element's text content on one line, with whitespace collapsed."""
+    return " ".join(_rich_text(el).split())
 
-    # Fallback: bare XCCDF document (Benchmark at root)
-    root = tree.getroot()
-    if root.tag == f"{{{NS_XCCDF}}}Benchmark":
-        return root
 
+_BLOCK_TAGS = {f"{{{NS_HTML}}}{t}": "\n\n" for t in ("p", "pre", "ul", "ol", "div", "table", "blockquote")}
+_BLOCK_TAGS.update({f"{{{NS_HTML}}}{t}": "\n" for t in ("li", "br", "tr")})
+
+
+def _rich_text(el: ET.Element | None) -> str:
+    """Return text content, preserving paragraph breaks from embedded XHTML."""
+    if el is None:
+        return ""
+    parts: list[str] = []
+
+    def walk(node: ET.Element) -> None:
+        separator = _BLOCK_TAGS.get(node.tag, "")
+        parts.append(separator)
+        if node.text:
+            parts.append(node.text)
+        for child in node:
+            walk(child)
+            if child.tail:
+                parts.append(child.tail)
+        parts.append(separator)
+
+    walk(el)
+    lines = [" ".join(line.split()) for line in "".join(parts).split("\n")]
+    text = "\n".join(lines)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def load_benchmark(ds_path: str) -> ET.Element:
+    """Parse a source datastream (or bare XCCDF file) and return its Benchmark element.
+
+    Parsing stops as soon as the Benchmark element is complete, which skips the
+    (much larger) OVAL components that follow it in SSG datastreams.
+    """
+    try:
+        elem: ET.Element
+        for _event, elem in ET.iterparse(ds_path, events=("end",)):  # noqa: S314
+            if elem.tag == TAG_BENCHMARK:
+                return elem
+    except ET.ParseError as exc:
+        raise BridgeError(f"failed to parse {ds_path}: {exc}") from exc
+    except OSError as exc:
+        raise BridgeError(f"cannot read {ds_path}: {exc}") from exc
+    raise BridgeError(f"no XCCDF benchmark found in {ds_path}")
+
+
+def _find_profile(benchmark: ET.Element, profile_id: str) -> ET.Element | None:
+    for prof in benchmark.findall(TAG_PROFILE):
+        if prof.get("id") == profile_id:
+            return prof
     return None
 
 
-def _parse_profiles(benchmark: ET.Element) -> list[ProfileInfo]:
-    """Extract all Profile elements from an XCCDF Benchmark."""
+class _BenchmarkIndex:
+    """Lookup tables derived from a Benchmark: rules, groups and values."""
+
+    def __init__(self, benchmark: ET.Element) -> None:
+        self.benchmark = benchmark
+        self.rules: dict[str, ET.Element] = {}
+        self.values: dict[str, ET.Element] = {}
+        self.group_path: dict[str, list[str]] = {}
+        self.group_rules: dict[str, list[str]] = {}
+        self._walk(benchmark, [], [])
+
+    def _walk(self, node: ET.Element, path: list[str], group_ids: list[str]) -> None:
+        for child in node:
+            if child.tag == TAG_GROUP:
+                gid = child.get("id", "")
+                self.group_rules.setdefault(gid, [])
+                self._walk(child, [*path, _text(child.find(TAG_TITLE))], [*group_ids, gid])
+            elif child.tag == TAG_RULE:
+                rid = child.get("id", "")
+                self.rules[rid] = child
+                self.group_path[rid] = path
+                for gid in group_ids:
+                    self.group_rules[gid].append(rid)
+            elif child.tag == TAG_VALUE:
+                self.values[child.get("id", "")] = child
+
+    def category(self, rule_id: str) -> str:
+        path = self.group_path.get(rule_id, [])
+        if len(path) >= GROUP_CATEGORY_DEPTH:
+            return path[GROUP_CATEGORY_DEPTH - 1]
+        return path[0] if path else ""
+
+    def selection(self, profile_id: str, *, _seen: set[str] | None = None) -> dict[str, bool]:
+        """Resolve which rules a profile selects, honouring ``extends`` and group selects."""
+        seen = _seen or set()
+        profile = _find_profile(self.benchmark, profile_id)
+        if profile is None or profile_id in seen:
+            return {rid: rule.get("selected", "true") == "true" for rid, rule in self.rules.items()}
+        seen.add(profile_id)
+        parent = profile.get("extends")
+        selected = (self.selection(parent, _seen=seen) if parent
+                    else {rid: rule.get("selected", "true") == "true" for rid, rule in self.rules.items()})
+        self.apply_selects(selected, profile.findall(TAG_SELECT))
+        return selected
+
+    def apply_selects(self, selected: dict[str, bool], selects: Iterable[ET.Element]) -> None:
+        for sel in selects:
+            idref = sel.get("idref", "")
+            state = sel.get("selected", "true") == "true"
+            if idref in self.rules:
+                selected[idref] = state
+            elif idref in self.group_rules:
+                for rid in self.group_rules[idref]:
+                    selected[rid] = state
+
+    def profile_values(self, profile_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        """Return (refine-value selectors, set-values) for a profile, honouring ``extends``."""
+        selectors: dict[str, str] = {}
+        set_values: dict[str, str] = {}
+        chain: list[ET.Element] = []
+        pid: str | None = profile_id
+        seen: set[str] = set()
+        while pid and pid not in seen:
+            seen.add(pid)
+            prof = _find_profile(self.benchmark, pid)
+            if prof is None:
+                break
+            chain.insert(0, prof)
+            pid = prof.get("extends")
+        for prof in chain:
+            for rv in prof.findall(TAG_REFINE_VALUE):
+                selectors[rv.get("idref", "")] = rv.get("selector", "")
+            for sv in prof.findall(TAG_SET_VALUE):
+                set_values[sv.get("idref", "")] = (sv.text or "").strip()
+        return selectors, set_values
+
+    def value_refs(self, rule_id: str) -> set[str]:
+        """Return the Value ids exported to a rule's checks."""
+        rule = self.rules.get(rule_id)
+        if rule is None:
+            return set()
+        return {
+            export.get("value-id", "")
+            for check in rule.findall(_x("check"))
+            for export in check.findall(_x("check-export"))
+            if export.get("value-id")
+        }
+
+
+def _rule_info(index: _BenchmarkIndex, rule_id: str, *, selected: bool) -> RuleInfo:
+    rule = index.rules[rule_id]
+    return RuleInfo(
+        id=rule_id,
+        title=_text(rule.find(TAG_TITLE)),
+        severity=rule.get("severity", "unknown"),
+        description=_rich_text(rule.find(TAG_DESCRIPTION)),
+        selected=selected,
+        group=index.category(rule_id),
+        group_path=index.group_path.get(rule_id, []),
+        has_fix=rule.find(_x("fix")) is not None,
+    )
+
+
+def _value_info(value: ET.Element, selector: str, set_value: str | None) -> ValueInfo:
+    options: list[ValueOption] = []
+    default = ""
+    for v in value.findall(_x("value")):
+        sel = v.get("selector", "")
+        text = (v.text or "").strip()
+        if sel:
+            options.append(ValueOption(selector=sel, value=text))
+        else:
+            default = text
+    effective = default
+    if set_value is not None:
+        effective = set_value
+    elif selector:
+        effective = next((o["value"] for o in options if o["selector"] == selector), default)
+    return ValueInfo(
+        id=value.get("id", ""),
+        title=_text(value.find(TAG_TITLE)),
+        description=_rich_text(value.find(TAG_DESCRIPTION)),
+        type=value.get("type", "string"),
+        default=default,
+        value=effective,
+        selector=selector,
+        set_value=set_value,
+        options=options,
+    )
+
+
+def list_profiles(ds_path: str, config: Config) -> list[ProfileInfo]:
+    benchmark = load_benchmark(ds_path)
+    index = _BenchmarkIndex(benchmark)
+    tailorings = config.get("tailorings", {})
     profiles: list[ProfileInfo] = []
-    for prof_el in benchmark.findall("xccdf:Profile", _NS):
-        prof_id = prof_el.get("id", "")
-        title_el = prof_el.find("xccdf:title", _NS)
-        desc_el = prof_el.find("xccdf:description", _NS)
-
-        # Count selected rules (select elements with selected="true")
-        selects = prof_el.findall("xccdf:select", _NS)
-        rule_count = sum(1 for s in selects if s.get("selected") == "true")
-
+    for prof in benchmark.findall(TAG_PROFILE):
+        pid = prof.get("id", "")
+        if not pid or prof.get("abstract") == "true":
+            continue
+        tailoring_path = tailorings.get(pid)
+        tailored_id: str | None = None
+        if tailoring_path and Path(tailoring_path).is_file():
+            try:
+                tailored_id = parse_tailoring_file(tailoring_path)["profile_id"]
+            except BridgeError:
+                tailored_id = None
+        else:
+            tailoring_path = None
         profiles.append(ProfileInfo(
-            id=prof_id,
-            title=title_el.text.strip() if title_el is not None and title_el.text else "",
-            description=desc_el.text.strip() if desc_el is not None and desc_el.text else "",
-            rule_count=rule_count,
+            id=pid,
+            title=_text(prof.find(TAG_TITLE)),
+            description=_rich_text(prof.find(TAG_DESCRIPTION)),
+            rule_count=sum(1 for v in index.selection(pid).values() if v),
+            extends=prof.get("extends"),
+            tailoring_path=tailoring_path,
+            tailored_profile_id=tailored_id,
         ))
     return profiles
 
 
-def _parse_rules_for_profile(
-    benchmark: ET.Element,
-    profile_id: str,
-) -> list[RuleInfo]:
-    """Extract rules selected by a specific profile from an XCCDF Benchmark."""
-    # Find the matching profile
-    profile_el: ET.Element | None = None
-    for prof in benchmark.findall("xccdf:Profile", _NS):
-        if prof.get("id") == profile_id:
-            profile_el = prof
-            break
+def profile_rules(ds_path: str, profile_id: str) -> ProfileRules:
+    benchmark = load_benchmark(ds_path)
+    index = _BenchmarkIndex(benchmark)
+    profile = _find_profile(benchmark, profile_id)
+    if profile is None:
+        raise BridgeError(f"profile not found in datastream: {profile_id}")
 
-    if profile_el is None:
-        return []
+    selection = index.selection(profile_id)
+    rules = [_rule_info(index, rid, selected=selection.get(rid, False)) for rid in index.rules]
 
-    # Build a map of profile select overrides: rule_idref -> selected bool
-    profile_selects: dict[str, bool] = {}
-    for sel in profile_el.findall("xccdf:select", _NS):
-        idref = sel.get("idref", "")
-        selected = sel.get("selected", "true") == "true"
-        if idref:
-            profile_selects[idref] = selected
-
-    # Build a map of all Rule elements in the benchmark
-    rules: list[RuleInfo] = []
-    for rule_el in benchmark.iter(f"{{{NS_XCCDF}}}Rule"):
-        rule_id = rule_el.get("id", "")
-        if not rule_id:
-            continue
-
-        # Determine selection: profile override takes precedence over rule default
-        if rule_id in profile_selects:
-            selected = profile_selects[rule_id]
-        else:
-            # Rule's own selected attribute (defaults to true per XCCDF spec)
-            selected = rule_el.get("selected", "true") == "true"
-
-        title_el = rule_el.find("xccdf:title", _NS)
-        desc_el = rule_el.find("xccdf:description", _NS)
-        severity = rule_el.get("severity", "unknown")
-
-        rules.append(RuleInfo(
-            id=rule_id,
-            title=title_el.text.strip() if title_el is not None and title_el.text else "",
-            severity=severity,
-            description=desc_el.text.strip() if desc_el is not None and desc_el.text else "",
-            selected=selected,
-        ))
-
-    return rules
+    selectors, set_values = index.profile_values(profile_id)
+    referenced: set[str] = set(selectors) | set(set_values)
+    for rid, is_selected in selection.items():
+        if is_selected:
+            referenced |= index.value_refs(rid)
+    values = [
+        _value_info(index.values[vid], selectors.get(vid, ""), set_values.get(vid))
+        for vid in sorted(referenced) if vid in index.values
+    ]
+    values.sort(key=lambda v: v["title"].lower())
+    return ProfileRules(profile_id=profile_id, title=_text(profile.find(TAG_TITLE)), rules=rules, values=values)
 
 
-# ---------------------------------------------------------------------------
-# Timer management helpers
-# ---------------------------------------------------------------------------
-
-_TIMER_UNIT: str = "cockpit-oscap-scan.timer"
-_TIMER_OVERRIDE_DIR: Path = Path(f"/etc/systemd/system/{_TIMER_UNIT}.d")
-
-
-def _parse_systemctl_show(output: str) -> dict[str, str]:
-    """Parse ``systemctl show --property=...`` output into a dict."""
-    props: dict[str, str] = {}
-    for line in output.splitlines():
-        eq = line.find("=")
-        if eq > 0:
-            props[line[:eq]] = line[eq + 1:]
-    return props
-
-
-def _get_timer_status() -> TimerStatus:
-    """Query systemd for the timer unit's current state."""
-    rc, stdout, stderr = run_cmd([
-        "systemctl", "show", _TIMER_UNIT,
-        "--property=ActiveState,NextElapseUSecRealtime,Description",
-    ])
-
-    if rc != 0 and "not found" in stderr.lower():
-        return TimerStatus(status="not-found", next_run="", frequency="")
-
-    props = _parse_systemctl_show(stdout)
-    active = props.get("ActiveState", "unknown")
-
-    # Treat "inactive" + missing description as not-found (unit not installed)
-    description = props.get("Description", "")
-    if active == "inactive" and not description:
-        return TimerStatus(status="not-found", next_run="", frequency="")
-
-    next_raw = props.get("NextElapseUSecRealtime", "")
-    next_run = "" if next_raw in ("n/a", "") else next_raw
-
-    # Try to read frequency from the override, falling back to "weekly" default
-    frequency = "weekly"
-    override_conf = _TIMER_OVERRIDE_DIR / "override.conf"
-    if override_conf.is_file():
-        for line in override_conf.read_text().splitlines():
-            if line.startswith("OnCalendar="):
-                frequency = line.split("=", maxsplit=1)[1]
-                break
-
-    return TimerStatus(status=active, next_run=next_run, frequency=frequency)
-
-
-def _build_on_calendar(config: TimerConfig) -> str:
-    """Convert a TimerConfig into a systemd OnCalendar value.
-
-    Examples:
-        {"frequency": "daily"} -> "daily"
-        {"frequency": "daily", "time": "03:00"} -> "*-*-* 03:00:00"
-        {"frequency": "weekly", "day": "Mon", "time": "02:30"} -> "Mon *-*-* 02:30:00"
-        {"frequency": "monthly"} -> "monthly"
-    """
-    freq = config.get("frequency", "weekly")
-    day = config.get("day", "")
-    time_str = config.get("time", "")
-
-    if time_str:
-        # Normalize time to HH:MM:SS
-        normalized_time = time_str if time_str.count(":") >= 2 else f"{time_str}:00"  # noqa: PLR2004
-        if day:
-            return f"{day} *-*-* {normalized_time}"
-        if freq == "daily":
-            return f"*-*-* {normalized_time}"
-        # weekly/monthly with time but no day — use the time with freq prefix
-        return f"*-*-* {normalized_time}"
-
-    return freq
-
-
-# ---------------------------------------------------------------------------
-# Command handlers
-# ---------------------------------------------------------------------------
-
-
-def cmd_detect_backend(_args: list[str]) -> None:
-    """Handle the detect-backend command."""
-    oscap = get_oscap_version()
-    complyctl = get_complyctl_info()
-    content = get_content_info()
-    result = BackendInfo(oscap=oscap, complyctl=complyctl, content=content)
-    output_json(result)
+def rule_detail(ds_path: str, rule_id: str) -> RuleDetail:
+    benchmark = load_benchmark(ds_path)
+    index = _BenchmarkIndex(benchmark)
+    rule = index.rules.get(rule_id)
+    if rule is None:
+        raise BridgeError(f"rule not found: {rule_id}")
+    fixes = rule.findall(_x("fix"))
+    return RuleDetail(
+        id=rule_id,
+        title=_text(rule.find(TAG_TITLE)),
+        severity=rule.get("severity", "unknown"),
+        description=_rich_text(rule.find(TAG_DESCRIPTION)),
+        rationale=_rich_text(rule.find(TAG_RATIONALE)),
+        warnings=[_rich_text(w) for w in rule.findall(TAG_WARNING)],
+        references=[Reference(href=r.get("href", ""), text=_text(r)) for r in rule.findall(_x("reference"))],
+        idents=[Ident(system=i.get("system", ""), text=_text(i)) for i in rule.findall(_x("ident"))],
+        group_path=index.group_path.get(rule_id, []),
+        has_fix=bool(fixes),
+        fix_systems=sorted({f.get("system", "") for f in fixes}),
+    )
 
 
 def cmd_list_profiles(args: list[str]) -> None:
-    """Handle the list-profiles command.
-
-    Optional arg: datastream path (defaults to DEFAULT_DATASTREAM).
-    Returns a JSON array of ProfileInfo objects.
-    """
-    ds_path = Path(args[0]) if args else Path(DEFAULT_DATASTREAM)
-    if not ds_path.is_file():
-        output_json([])
-        return
-
-    try:
-        tree = ET.parse(str(ds_path))  # noqa: S314
-    except ET.ParseError as exc:
-        output_error(f"failed to parse datastream XML: {exc}")
-        return
-
-    benchmark = _find_xccdf_benchmark(tree)
-    if benchmark is None:
-        output_json([])
-        return
-
-    profiles = _parse_profiles(benchmark)
-    output_json(profiles)
+    config = load_config()
+    positional = _positional(args)
+    ds_path = resolve_datastream(_opt(args, "--datastream") or (positional[0] if positional else None), config)
+    output_json(list_profiles(ds_path, config))
 
 
 def cmd_profile_rules(args: list[str]) -> None:
-    """Handle the profile-rules command.
-
-    Required arg: profile_id.
-    Optional arg: datastream path (defaults to DEFAULT_DATASTREAM).
-    Returns a JSON array of RuleInfo objects.
-    """
-    if not args:
-        output_error("profile-rules requires a profile_id argument")
-        return
-
-    profile_id = args[0]
-    ds_path = Path(args[1]) if len(args) > 1 else Path(DEFAULT_DATASTREAM)
-
-    if not ds_path.is_file():
-        output_json([])
-        return
-
-    try:
-        tree = ET.parse(str(ds_path))  # noqa: S314
-    except ET.ParseError as exc:
-        output_error(f"failed to parse datastream XML: {exc}")
-        return
-
-    benchmark = _find_xccdf_benchmark(tree)
-    if benchmark is None:
-        output_json([])
-        return
-
-    rules = _parse_rules_for_profile(benchmark, profile_id)
-    output_json(rules)
+    positional = _positional(args)
+    if not positional:
+        raise BridgeError("profile-rules requires a profile id argument")
+    ds_path = resolve_datastream(_opt(args, "--datastream") or (positional[1] if len(positional) > 1 else None))
+    output_json(profile_rules(ds_path, positional[0]))
 
 
-class _ScanArgs(TypedDict):
-    """Parsed arguments for the scan command."""
-
-    profile_id: str | None
-    tailoring_path: str | None
-    datastream: str
-
-
-def _parse_scan_args(args: list[str]) -> _ScanArgs:
-    """Parse scan command arguments into a structured dict."""
-    profile_id: str | None = None
-    tailoring_path: str | None = None
-    datastream: str = DEFAULT_DATASTREAM
-
-    i = 0
-    while i < len(args):
-        if args[i] == "--tailoring-path" and i + 1 < len(args):
-            tailoring_path = args[i + 1]
-            i += 2
-        elif args[i] == "--datastream" and i + 1 < len(args):
-            datastream = args[i + 1]
-            i += 2
-        elif not args[i].startswith("--") and profile_id is None:
-            profile_id = args[i]
-            i += 1
-        else:
-            i += 1
-
-    return _ScanArgs(profile_id=profile_id, tailoring_path=tailoring_path, datastream=datastream)
+def cmd_rule_info(args: list[str]) -> None:
+    positional = _positional(args)
+    if not positional:
+        raise BridgeError("rule-info requires a rule id argument")
+    ds_path = resolve_datastream(_opt(args, "--datastream"))
+    output_json(rule_detail(ds_path, positional[0]))
 
 
-def _resolve_profile_from_config() -> str | None:
-    """Read active_profile from config.json, returning None on any failure."""
-    if not CONFIG_PATH.is_file():
-        return None
-    try:
-        with CONFIG_PATH.open() as f:
-            config: dict[str, object] = json.load(f)
-        value = config.get("active_profile")
-        return str(value) if isinstance(value, str) else None
-    except (json.JSONDecodeError, OSError):
-        return None
+# ---------------------------------------------------------------------------
+# Tailoring
+# ---------------------------------------------------------------------------
 
 
-def _run_oscap_scan(cmd: list[str]) -> tuple[int, list[str], bool]:
-    """Run oscap via Popen, streaming progress to stderr.
-
-    Returns (exit_code, stderr_lines, was_interrupted).
-    """
-    rule_pattern = re.compile(r"Evaluating rule", re.IGNORECASE)
-    total_rules = 0
-    current_rule = 0
-    interrupted = False
-
-    original_sigterm = signal.getsignal(signal.SIGTERM)
-
-    def _on_sigterm(_signum: int, _frame: object) -> None:
-        nonlocal interrupted
-        interrupted = True
-
-    signal.signal(signal.SIGTERM, _on_sigterm)
-
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-
-        stderr_lines: list[str] = []
-        if proc.stderr is not None:
-            for line in proc.stderr:
-                stderr_lines.append(line)
-                if rule_pattern.search(line):
-                    current_rule += 1
-                    count_match = re.search(r"(\d+)/(\d+)", line)
-                    if count_match:
-                        current_rule = int(count_match.group(1))
-                        total_rules = int(count_match.group(2))
-                    effective_total = total_rules if total_rules > 0 else current_rule
-                    msg = (
-                        f"Evaluating rule {current_rule}/{total_rules}" if total_rules > 0
-                        else f"Evaluating rule {current_rule}"
-                    )
-                    _emit_progress(current_rule, effective_total, msg)
-
-        rc = proc.wait()
-    finally:
-        signal.signal(signal.SIGTERM, original_sigterm)
-
-    return rc, stderr_lines, interrupted
+def _profile_short_name(profile_id: str) -> str:
+    """xccdf_org.ssgproject.content_profile_ospp -> ospp."""
+    match = re.search(r"_profile_(.+)$", profile_id)
+    return match.group(1) if match else profile_id.rsplit("_", maxsplit=1)[-1]
 
 
-def _validate_scan_paths(
-    datastream: str,
-    tailoring_path: str | None,
-) -> str | None:
-    """Validate oscap binary and file paths.  Returns an error message, or None if OK."""
-    oscap_path = shutil.which("oscap")
-    if oscap_path is None:
-        return "oscap binary not found in PATH"
-    if not Path(datastream).is_file():
-        return f"datastream not found: {datastream}"
-    if tailoring_path is not None and not Path(tailoring_path).is_file():
-        return f"tailoring file not found: {tailoring_path}"
-    return None
+def _tailoring_path_for(base_profile_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", _profile_short_name(base_profile_id))
+    return TAILORING_DIR / f"{safe}-tailoring.xml"
 
 
-def _build_oscap_cmd(
-    oscap_path: str,
-    arf_path: str,
-    profile_id: str,
-    datastream: str,
-    tailoring_path: str | None,
-) -> list[str]:
-    """Build the oscap xccdf command-line argument list."""
-    cmd: list[str] = [
-        oscap_path, "xccdf", "eval",
-        "--results-arf", arf_path,
-        "--profile", profile_id,
-    ]
-    if tailoring_path is not None:
-        cmd.extend(["--tailoring-file", tailoring_path])
-    cmd.append(datastream)
-    return cmd
+def _validate_modifications(raw: object) -> list[TailoringModification]:
+    if not isinstance(raw, list):
+        raise BridgeError("modifications must be a JSON array")
+    mods: list[TailoringModification] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise BridgeError("each modification must be a JSON object")
+        idref = item.get("idref") or item.get("rule_id")
+        action = item.get("action")
+        if not isinstance(idref, str) or not XCCDF_ID_RE.match(idref):
+            raise BridgeError(f"invalid modification idref: {idref!r}")
+        if action not in TAILORING_ACTIONS:
+            raise BridgeError(f"invalid modification action: {action!r}")
+        mod = TailoringModification(idref=idref, action=action)
+        if action == ACTION_SET_VALUE:
+            value = item.get("value", "")
+            if not isinstance(value, str):
+                raise BridgeError("set-value requires a string value")
+            mod["value"] = value
+        elif action == ACTION_REFINE_VALUE:
+            selector = item.get("selector", "")
+            if not isinstance(selector, str) or not selector:
+                raise BridgeError("refine-value requires a selector")
+            mod["selector"] = selector
+        mods.append(mod)
+    return mods
 
 
-def cmd_scan(args: list[str]) -> None:
-    """Handle the scan command.
-
-    oscap xccdf exit codes: 0 = all pass, 1 = error, 2 = some rules failed (normal).
-    """
-    scan_args = _parse_scan_args(args)
-    profile_id = scan_args["profile_id"] or _resolve_profile_from_config()
-
-    if profile_id is None:
-        output_error("scan requires a profile_id argument or active_profile in config.json")
-        return
-
-    validation_err = _validate_scan_paths(scan_args["datastream"], scan_args["tailoring_path"])
-    if validation_err is not None:
-        output_error(validation_err)
-        return
-
-    oscap_path = shutil.which("oscap")
-    if oscap_path is None:  # unreachable after validation, satisfies mypy
-        output_error("oscap binary not found in PATH")
-        return
-
-    # Prepare output paths
-    results_dir = RESULTS_DIR
-    results_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H%M%S")
-    short_name = _profile_short_name(profile_id)
-    arf_path = str(results_dir / f"{timestamp}-{short_name}.arf.xml")
-
-    cmd = _build_oscap_cmd(oscap_path, arf_path, profile_id, scan_args["datastream"], scan_args["tailoring_path"])
-    rc, stderr_lines, interrupted = _run_oscap_scan(cmd)
-
-    # Exit code 1 = real error; 0 = all pass; 2 = some rules failed (normal)
-    if rc == 1:
-        output_error(f"oscap xccdf failed (exit code 1): {''.join(stderr_lines)[:500]}")
-        return
-
-    if not Path(arf_path).is_file():
-        output_error("oscap did not produce an ARF results file")
-        return
-
-    try:
-        parsed = _parse_arf_results(arf_path)
-    except ET.ParseError as exc:
-        output_error(f"failed to parse ARF results XML: {exc}")
-        return
-
-    # Save JSON alongside ARF — include metadata so the file is self-contained
-    status = ScanStatus.INTERRUPTED if interrupted else ScanStatus.COMPLETE
-    json_path = arf_path.replace(".arf.xml", ".json")
-    saved: ScanResult = {
-        "score": parsed["score"],
-        "results": parsed["results"],
-        "arf_path": arf_path,
-        "json_path": json_path,
-        "timestamp": timestamp,
-        "profile_id": profile_id,
-        "status": status,
-    }
-    with Path(json_path).open("w") as f:
-        json.dump(saved, f, indent=2)
-        f.write("\n")
-
-    _prune_old_results(results_dir)
-
-    output_json(saved)
-
-
-def cmd_generate_fix(args: list[str]) -> None:
-    """Handle the generate-fix command.
-
-    Required arg: profile_id.
-    Optional arg: datastream path (defaults to DEFAULT_DATASTREAM).
-
-    Runs ``oscap xccdf generate fix`` to produce a bash remediation script,
-    then splits it into per-rule snippets and classifies each by risk level.
-    """
-    if not args:
-        output_error("generate-fix requires a profile_id argument")
-        return
-
-    profile_id = args[0]
-    ds_path = args[1] if len(args) > 1 else DEFAULT_DATASTREAM
-
-    oscap_path = shutil.which("oscap")
-    if oscap_path is None:
-        output_error("oscap binary not found in PATH")
-        return
-
-    if not Path(ds_path).is_file():
-        output_error(f"datastream not found: {ds_path}")
-        return
-
-    cmd = [
-        oscap_path, "xccdf", "generate", "fix",
-        "--fix-type", "bash",
-        "--profile", profile_id,
-        ds_path,
-    ]
-
-    rc, stdout, stderr = run_cmd(cmd)
-    if rc != 0:
-        output_error(f"oscap generate fix failed (exit {rc}): {stderr[:500]}")
-        return
-
-    rules = _parse_fix_script(stdout)
-    output_json(FixInfo(script=stdout, rules=rules))
-
-
-# Timeout for apply-fix subprocess (5 minutes)
-_APPLY_FIX_TIMEOUT: int = 300
-
-
-def cmd_apply_fix(args: list[str]) -> None:
-    """Handle the apply-fix command.
-
-    Required arg: path to a bash fix script.
-    Executes the script and returns success/output/errors.
-    """
-    if not args:
-        output_error("apply-fix requires a script path argument")
-        return
-
-    script_path = Path(args[0])
-    if not script_path.is_file():
-        output_error(f"fix script not found: {script_path}")
-        return
-
-    try:
-        result = subprocess.run(
-            ["bash", str(script_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_APPLY_FIX_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        output_json(ApplyResult(
-            success=False,
-            output="",
-            errors=f"fix script timed out after {_APPLY_FIX_TIMEOUT}s",
-        ))
-        return
-
-    output_json(ApplyResult(
-        success=result.returncode == 0,
-        output=result.stdout,
-        errors=result.stderr,
-    ))
-
-
-def _build_tailoring_xml(
+def build_tailoring_xml(
     base_profile_id: str,
-    modifications: list[dict[str, str]],
-) -> TailoringResult:
-    """Generate XCCDF 1.2 tailoring XML and write it to TAILORING_DIR.
-
-    Returns a TailoringResult with the XML string and file path.
-    """
-    short_name = _profile_short_name(base_profile_id)
-    timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%S")
-
-    # Build XCCDF 1.2 Tailoring XML via ElementTree
-    tailoring = ET.Element(f"{{{NS_XCCDF}}}Tailoring")
-    tailoring.set("id", "cockpit-oscap-tailoring")
-
-    version = ET.SubElement(tailoring, f"{{{NS_XCCDF}}}version")
-    version.set("time", timestamp)
+    base_title: str,
+    modifications: list[TailoringModification],
+    datastream: str,
+) -> tuple[str, str]:
+    """Return (tailored profile id, XCCDF 1.2 tailoring XML)."""
+    ET.register_namespace("xccdf", NS_XCCDF)
+    tailoring = ET.Element(TAG_BENCHMARK.replace("Benchmark", "Tailoring"), {"id": TAILORING_ID})
+    ET.SubElement(tailoring, _x("benchmark"), {"href": datastream})
+    version = ET.SubElement(tailoring, _x("version"), {"time": _iso(_now_utc())})
     version.text = "1"
 
-    profile = ET.SubElement(tailoring, f"{{{NS_XCCDF}}}Profile")
-    profile.set("id", "cockpit_oscap_custom_profile")
-    profile.set("extends", base_profile_id)
-
-    title = ET.SubElement(profile, f"{{{NS_XCCDF}}}title")
-    title.text = f"Custom profile based on {short_name}"
+    profile_id = f"{base_profile_id}{TAILORED_SUFFIX}"
+    profile = ET.SubElement(tailoring, TAG_PROFILE, {"id": profile_id, "extends": base_profile_id})
+    title = ET.SubElement(profile, TAG_TITLE)
+    title.text = f"{base_title or _profile_short_name(base_profile_id)} (customized)"
 
     for mod in modifications:
-        action = mod.get("action", "")
-        rule_id = mod.get("rule_id", "")
-        if action == "enable":
-            sel = ET.SubElement(profile, f"{{{NS_XCCDF}}}select")
-            sel.set("idref", rule_id)
-            sel.set("selected", "true")
-        elif action == "disable":
-            sel = ET.SubElement(profile, f"{{{NS_XCCDF}}}select")
-            sel.set("idref", rule_id)
-            sel.set("selected", "false")
-        elif action == "set-value":
-            sv = ET.SubElement(profile, f"{{{NS_XCCDF}}}set-value")
-            sv.set("idref", rule_id)
-            sv.text = mod.get("value", "")
+        action = mod["action"]
+        idref = mod["idref"]
+        if action in (ACTION_SELECT, ACTION_UNSELECT):
+            ET.SubElement(profile, TAG_SELECT, {"idref": idref, "selected": str(action == ACTION_SELECT).lower()})
+        elif action == ACTION_SET_VALUE:
+            ET.SubElement(profile, TAG_SET_VALUE, {"idref": idref}).text = mod.get("value", "")
+        elif action == ACTION_REFINE_VALUE:
+            ET.SubElement(profile, TAG_REFINE_VALUE, {"idref": idref, "selector": mod.get("selector", "")})
 
-    # Serialize to string with XML declaration
     ET.indent(tailoring)
-    xml_bytes = ET.tostring(tailoring, encoding="unicode", xml_declaration=False)
-    xml_str = f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_bytes}\n'
-
-    # Write to TAILORING_DIR
-    tailoring_dir = TAILORING_DIR
-    tailoring_dir.mkdir(parents=True, exist_ok=True)
-    out_path = tailoring_dir / f"{short_name}-custom.xml"
-    out_path.write_text(xml_str)
-
-    return TailoringResult(tailoring_xml=xml_str, path=str(out_path))
+    body = ET.tostring(tailoring, encoding="unicode")
+    return profile_id, f'<?xml version="1.0" encoding="UTF-8"?>\n{body}\n'
 
 
-def _parse_tailoring_file(tailoring_path: str) -> ParsedTailoring:
-    """Parse an XCCDF tailoring XML file and extract modifications.
-
-    Returns a ParsedTailoring with base_profile and modifications list.
-    """
-    tree = ET.parse(tailoring_path)  # noqa: S314
-    root = tree.getroot()
-
-    # Find the Profile element
-    profile = root.find(f"{{{NS_XCCDF}}}Profile")
+def parse_tailoring_xml(xml_text: str, path: str = "") -> TailoringInfo:
+    try:
+        root = ET.fromstring(xml_text)  # noqa: S314
+    except ET.ParseError as exc:
+        raise BridgeError(f"invalid tailoring XML: {exc}") from exc
+    if root.tag != _x("Tailoring"):
+        raise BridgeError("not an XCCDF 1.2 tailoring document")
+    profile = root.find(TAG_PROFILE)
     if profile is None:
-        output_error("tailoring XML does not contain a Profile element")
-        msg = "unreachable"
-        raise SystemExit(msg)
+        raise BridgeError("tailoring document does not contain a Profile element")
 
-    base_profile = profile.get("extends", "")
     modifications: list[TailoringModification] = []
-
-    # Extract select elements -> enable/disable
-    for sel in profile.findall(f"{{{NS_XCCDF}}}select"):
-        idref = sel.get("idref", "")
-        selected = sel.get("selected", "true")
-        action = "enable" if selected == "true" else "disable"
-        modifications.append(TailoringModification(rule_id=idref, action=action))
-
-    # Extract set-value elements
-    for sv in profile.findall(f"{{{NS_XCCDF}}}set-value"):
-        idref = sv.get("idref", "")
-        value = sv.text.strip() if sv.text else ""
+    for sel in profile.findall(TAG_SELECT):
+        action = ACTION_SELECT if sel.get("selected", "true") == "true" else ACTION_UNSELECT
+        modifications.append(TailoringModification(idref=sel.get("idref", ""), action=action))
+    for rv in profile.findall(TAG_REFINE_VALUE):
         modifications.append(TailoringModification(
-            rule_id=idref, action="set-value", value=value,
-        ))
+            idref=rv.get("idref", ""), action=ACTION_REFINE_VALUE, selector=rv.get("selector", "")))
+    for sv in profile.findall(TAG_SET_VALUE):
+        modifications.append(TailoringModification(
+            idref=sv.get("idref", ""), action=ACTION_SET_VALUE, value=(sv.text or "").strip()))
 
-    return ParsedTailoring(base_profile=base_profile, modifications=modifications)
+    bench = root.find(_x("benchmark"))
+    return TailoringInfo(
+        path=path,
+        profile_id=profile.get("id", ""),
+        base_profile_id=profile.get("extends", ""),
+        title=_text(profile.find(TAG_TITLE)),
+        benchmark_href=bench.get("href", "") if bench is not None else "",
+        modifications=modifications,
+        tailoring_xml=xml_text,
+        warning="",
+    )
+
+
+def parse_tailoring_file(path: str) -> TailoringInfo:
+    try:
+        text = Path(path).read_text()
+    except OSError as exc:
+        raise BridgeError(f"cannot read tailoring file {path}: {exc}") from exc
+    return parse_tailoring_xml(text, path)
+
+
+def _register_tailoring(base_profile_id: str, path: Path) -> None:
+    config = load_config()
+    tailorings = config.setdefault("tailorings", {})
+    tailorings[base_profile_id] = str(path)
+    save_config(config)
 
 
 def cmd_create_tailoring(args: list[str]) -> None:
-    """Handle the create-tailoring command.
+    positional = _positional(args)
+    if len(positional) < REQUIRED_PAIR:
+        raise BridgeError("create-tailoring requires a base profile id and a modifications JSON array")
+    base_profile_id = positional[0]
+    modifications = _validate_modifications(_parse_json_arg(positional[1], "modifications"))
+    ds_path = resolve_datastream(_opt(args, "--datastream"))
+    profile = _find_profile(load_benchmark(ds_path), base_profile_id)
+    if profile is None:
+        raise BridgeError(f"profile not found in datastream: {base_profile_id}")
 
-    Required args:
-        args[0]: base_profile_id — full XCCDF profile ID to extend.
-        args[1]: modifications_json — JSON array of TailoringModification dicts.
+    base_title = _text(profile.find(TAG_TITLE))
+    profile_id, xml_text = build_tailoring_xml(base_profile_id, base_title, modifications, ds_path)
+    path = _tailoring_path_for(base_profile_id)
+    _atomic_write(path, xml_text)
+    _register_tailoring(base_profile_id, path)
+    info = parse_tailoring_xml(xml_text, str(path))
+    info["profile_id"] = profile_id
+    output_json(info)
 
-    Generates XCCDF 1.2 tailoring XML, writes it to TAILORING_DIR, and outputs
-    a TailoringResult JSON with the XML string and file path.
-    """
-    if len(args) < 2:  # noqa: PLR2004
-        output_error("create-tailoring requires base_profile_id and modifications_json arguments")
-        return
 
-    base_profile_id = args[0]
-    try:
-        modifications: list[dict[str, str]] = json.loads(args[1])
-    except json.JSONDecodeError as exc:
-        output_error(f"invalid modifications JSON: {exc}")
-        return
-
-    result = _build_tailoring_xml(base_profile_id, modifications)
-    output_json(result)
+def _read_stdin_or_file(arg: str) -> str:
+    if arg == "-":
+        return sys.stdin.read()
+    return parse_tailoring_file(arg)["tailoring_xml"]
 
 
 def cmd_parse_tailoring(args: list[str]) -> None:
-    """Handle the parse-tailoring command.
-
-    Required arg: tailoring_path — path to an XCCDF tailoring XML file.
-
-    Parses the tailoring file and extracts the base profile and all rule
-    modifications (select elements -> enable/disable, set-value elements).
-    """
     if not args:
-        output_error("parse-tailoring requires a tailoring_path argument")
-        return
+        raise BridgeError("parse-tailoring requires a file path (or '-' for stdin)")
+    output_json(parse_tailoring_xml(_read_stdin_or_file(args[0]), "" if args[0] == "-" else args[0]))
 
-    tailoring_path = args[0]
-    if not Path(tailoring_path).is_file():
-        output_error(f"tailoring file not found: {tailoring_path}")
-        return
 
+def cmd_import_tailoring(args: list[str]) -> None:
+    positional = _positional(args)
+    if len(positional) < REQUIRED_PAIR:
+        raise BridgeError("import-tailoring requires a base profile id and a file path (or '-' for stdin)")
+    base_profile_id, source = positional[0], positional[1]
+    xml_text = _read_stdin_or_file(source)
+    info = parse_tailoring_xml(xml_text)
+    warning = ""
+    if info["base_profile_id"] and info["base_profile_id"] != base_profile_id:
+        warning = (f"The imported tailoring extends profile '{info['base_profile_id']}', "
+                   f"not '{base_profile_id}'. Its customizations were applied where possible.")
+    path = _tailoring_path_for(base_profile_id)
+    _atomic_write(path, xml_text)
+    _register_tailoring(base_profile_id, path)
+    info["path"] = str(path)
+    info["warning"] = warning
+    output_json(info)
+
+
+def cmd_delete_tailoring(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("delete-tailoring requires a base profile id")
+    config = load_config()
+    tailorings = config.get("tailorings", {})
+    path = tailorings.pop(args[0], None)
+    if path:
+        Path(path).unlink(missing_ok=True)
+    if not tailorings:
+        config.pop("tailorings", None)
+    save_config(config)
+    output_json({"deleted": bool(path), "profile_id": args[0]})
+
+
+# ---------------------------------------------------------------------------
+# Results storage
+# ---------------------------------------------------------------------------
+
+
+def _check_result_id(result_id: str) -> str:
+    if not RESULT_ID_RE.match(result_id) or ".." in result_id:
+        raise BridgeError(f"invalid result id: {result_id}")
+    return result_id
+
+
+def _result_paths(result_id: str) -> tuple[Path, Path]:
+    _check_result_id(result_id)
+    return RESULTS_DIR / f"{result_id}.json", RESULTS_DIR / f"{result_id}.arf.xml"
+
+
+def _normalize_timestamp(value: object) -> str:
+    """Accept ISO 8601 or the legacy compact YYYY-MM-DDTHHMMSS (UTC) format."""
+    if not isinstance(value, str) or not value:
+        return ""
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})(\d{2})$", value)
+    if match:
+        return f"{match.group(1)}T{match.group(2)}:{match.group(3)}:{match.group(4)}+00:00"
+    return value
+
+
+def _count_results(results: list[RuleResultItem]) -> dict[str, int]:
+    counts = dict.fromkeys(RESULT_KINDS, 0)
+    for item in results:
+        key = item["result"] if item["result"] in counts else "unknown"
+        counts[key] += 1
+    return counts
+
+
+def _coerce_result_items(raw: object) -> list[RuleResultItem]:
+    items: list[RuleResultItem] = []
+    if not isinstance(raw, list):
+        return items
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        items.append(RuleResultItem(
+            rule_id=str(entry.get("rule_id", "")),
+            result=str(entry.get("result", "unknown")),
+            title=str(entry.get("title", "")),
+            severity=str(entry.get("severity", "unknown")),
+            group=str(entry.get("group", "")),
+            message=str(entry.get("message", "")),
+        ))
+    return items
+
+
+def _load_result(result_id: str) -> ScanResult:
+    """Load a saved result, filling defaults for files written by older versions."""
+    json_path, arf_path = _result_paths(result_id)
+    raw = _read_json_file(json_path)
+    if raw is None:
+        raise BridgeError(f"scan result not found: {result_id}")
+    results = _coerce_result_items(raw.get("results"))
+    counts_raw = raw.get("counts")
+    counts = ({k: int(v) for k, v in counts_raw.items() if isinstance(v, int)}
+              if isinstance(counts_raw, dict) else _count_results(results))
+    for kind in RESULT_KINDS:
+        counts.setdefault(kind, 0)
+    score = raw.get("score")
+    xccdf_score = raw.get("xccdf_score")
+    tailoring_path = raw.get("tailoring_path")
+    return ScanResult(
+        id=result_id,
+        timestamp=_normalize_timestamp(raw.get("timestamp")),
+        start_time=str(raw.get("start_time", "")),
+        end_time=str(raw.get("end_time", "")),
+        profile_id=str(raw.get("profile_id", "")),
+        profile_title=str(raw.get("profile_title", "")),
+        base_profile_id=str(raw.get("base_profile_id", raw.get("profile_id", ""))),
+        benchmark_id=str(raw.get("benchmark_id", "")),
+        benchmark_version=str(raw.get("benchmark_version", "")),
+        datastream=str(raw.get("datastream", "")),
+        tailoring_path=tailoring_path if isinstance(tailoring_path, str) else None,
+        tailored=bool(raw.get("tailored", False)),
+        test_result_id=str(raw.get("test_result_id", "")),
+        status=str(raw.get("status", "complete")),
+        score=float(score) if isinstance(score, (int, float)) else 0.0,
+        xccdf_score=float(xccdf_score) if isinstance(xccdf_score, (int, float)) else None,
+        counts=counts,
+        results=results,
+        arf_path=str(arf_path) if arf_path.is_file() else str(raw.get("arf_path", "")),
+        json_path=str(json_path),
+    )
+
+
+def _summarize(result: ScanResult) -> ResultSummary:
+    return ResultSummary(
+        id=result["id"],
+        timestamp=result["timestamp"],
+        profile_id=result["profile_id"],
+        profile_title=result["profile_title"],
+        score=result["score"],
+        counts=result["counts"],
+        total=len(result["results"]),
+        status=result["status"],
+        tailored=result["tailored"],
+        has_arf=bool(result["arf_path"]) and Path(result["arf_path"]).is_file(),
+    )
+
+
+def list_results() -> list[ResultSummary]:
+    summaries: list[ResultSummary] = []
+    if not RESULTS_DIR.is_dir():
+        return summaries
+    for path in RESULTS_DIR.glob("*.json"):
+        result_id = path.name[:-len(".json")]
+        if not RESULT_ID_RE.match(result_id):
+            continue
+        try:
+            summaries.append(_summarize(_load_result(result_id)))
+        except BridgeError:
+            continue
+    summaries.sort(key=lambda s: (s["timestamp"], s["id"]), reverse=True)
+    return summaries
+
+
+def prune_results(max_results: int) -> None:
+    """Delete the oldest result files beyond ``max_results``; ids sort chronologically."""
+    if not RESULTS_DIR.is_dir():
+        return
+    ids = sorted({p.name[:-len(".json")] for p in RESULTS_DIR.glob("*.json")
+                  if RESULT_ID_RE.match(p.name[:-len(".json")])})
+    for old in ids[:-max_results] if max_results > 0 else []:
+        for path in (RESULTS_DIR / f"{old}.json", RESULTS_DIR / f"{old}.arf.xml"):
+            path.unlink(missing_ok=True)
+    if REMEDIATION_DIR.is_dir():
+        scripts = sorted(REMEDIATION_DIR.glob("*.sh"))
+        for script in scripts[:-max_results] if max_results > 0 else []:
+            script.unlink(missing_ok=True)
+
+
+def cmd_list_results(_args: list[str]) -> None:
+    if DATA_DIR.is_dir() and os.access(DATA_DIR, os.W_OK):
+        reconcile_scan_state()
+    output_json(list_results())
+
+
+def cmd_get_result(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("get-result requires a result id")
+    output_json(_load_result(args[0]))
+
+
+def cmd_delete_result(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("delete-result requires a result id")
+    json_path, arf_path = _result_paths(args[0])
+    if not json_path.is_file():
+        raise BridgeError(f"scan result not found: {args[0]}")
+    json_path.unlink()
+    arf_path.unlink(missing_ok=True)
+    output_json({"deleted": True, "id": args[0]})
+
+
+# ---------------------------------------------------------------------------
+# ARF result parsing
+# ---------------------------------------------------------------------------
+
+
+class ParsedArf(TypedDict):
+    test_result_id: str
+    profile_id: str
+    benchmark_id: str
+    benchmark_version: str
+    start_time: str
+    end_time: str
+    xccdf_score: float | None
+    score: float
+    results: list[RuleResultItem]
+
+
+def parse_arf(arf_path: str) -> ParsedArf:
+    """Extract the TestResult from an ARF (or bare XCCDF results) document.
+
+    The score is computed as pass / (pass + fail + error) * 100; rules that are
+    not selected are omitted and rules with other results are excluded from the
+    denominator.  The official XCCDF score is reported alongside.
+    """
     try:
-        result = _parse_tailoring_file(tailoring_path)
+        root = ET.parse(arf_path).getroot()  # noqa: S314
     except ET.ParseError as exc:
-        output_error(f"failed to parse tailoring XML: {exc}")
-        return
+        raise BridgeError(f"failed to parse results XML: {exc}") from exc
+    except OSError as exc:
+        raise BridgeError(f"cannot read results file: {exc}") from exc
 
-    output_json(result)
+    test_result = next(root.iter(TAG_TEST_RESULT), None)
+    if test_result is None:
+        raise BridgeError("results document does not contain a TestResult")
+
+    benchmark = next(root.iter(TAG_BENCHMARK), None)
+    index = _BenchmarkIndex(benchmark) if benchmark is not None else None
+
+    results: list[RuleResultItem] = []
+    tally = dict.fromkeys(SCORED_RESULTS, 0)
+    for rr in test_result.findall(TAG_RULE_RESULT):
+        rule_id = rr.get("idref", "")
+        result = _text(rr.find(TAG_RESULT)) or "unknown"
+        if result == RESULT_NOTSELECTED:
+            continue
+        rule = index.rules.get(rule_id) if index else None
+        severity = rr.get("severity", "") or (rule.get("severity", "unknown") if rule is not None else "unknown")
+        results.append(RuleResultItem(
+            rule_id=rule_id,
+            result=result,
+            title=_text(rule.find(TAG_TITLE)) if rule is not None else "",
+            severity=severity,
+            group=index.category(rule_id) if index else "",
+            message="; ".join(_text(m) for m in rr.findall(TAG_MESSAGE)),
+        ))
+        if result in tally:
+            tally[result] += 1
+
+    denominator = sum(tally.values())
+    score = round(tally[RESULT_PASS] / denominator * 100.0, 2) if denominator else 0.0
+    score_el = test_result.find(_x("score"))
+    xccdf_score: float | None = None
+    if score_el is not None and score_el.text:
+        try:
+            xccdf_score = round(float(score_el.text), 2)
+        except ValueError:
+            xccdf_score = None
+
+    profile_el = test_result.find(_x("profile"))
+    bench_el = test_result.find(_x("benchmark"))
+    return ParsedArf(
+        test_result_id=test_result.get("id", ""),
+        profile_id=profile_el.get("idref", "") if profile_el is not None else "",
+        benchmark_id=bench_el.get("id", "") if bench_el is not None else "",
+        benchmark_version=test_result.get("version", ""),
+        start_time=test_result.get("start-time", ""),
+        end_time=test_result.get("end-time", ""),
+        xccdf_score=xccdf_score,
+        score=score,
+        results=results,
+    )
 
 
-def _timer_enable() -> None:
-    """Enable and start the timer unit, then output status."""
-    rc, _stdout, stderr = run_cmd(["systemctl", "enable", "--now", _TIMER_UNIT])
-    if rc != 0:
-        output_error(f"systemctl enable failed: {stderr[:500]}")
-        return
-    output_json(_get_timer_status())
+# ---------------------------------------------------------------------------
+# Scanning
+# ---------------------------------------------------------------------------
 
 
-def _timer_disable() -> None:
-    """Disable and stop the timer unit, then output status."""
-    rc, _stdout, stderr = run_cmd(["systemctl", "disable", "--now", _TIMER_UNIT])
-    if rc != 0:
-        output_error(f"systemctl disable failed: {stderr[:500]}")
-        return
-    output_json(_get_timer_status())
+class ScanRequest(TypedDict):
+    profile_id: str
+    base_profile_id: str
+    profile_title: str
+    datastream: str
+    tailoring_path: str | None
+    source: str
+    total_rules: int
 
 
-def _timer_configure(args: list[str]) -> None:
-    """Write a drop-in override for OnCalendar and optionally update active_profile."""
-    if len(args) < 2:  # noqa: PLR2004
-        output_error("manage-timer configure requires a JSON config argument")
-        return
-
+def _write_scan_state(state: JsonDict) -> None:
     try:
-        config: TimerConfig = json.loads(args[1])
-    except json.JSONDecodeError as exc:
-        output_error(f"invalid timer config JSON: {exc}")
+        _atomic_write(SCAN_STATE_PATH, json.dumps(state) + "\n")
+    except BridgeError:
+        log.warning("cannot write scan state file")
+
+
+def _scan_lock() -> int:
+    """Take the scan lock; raise if another scan is running."""
+    _ensure_dir(DATA_DIR)
+    fd = os.open(SCAN_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise BridgeError("a compliance scan is already running") from exc
+    return fd
+
+
+def reconcile_scan_state() -> None:
+    """Mark a "running" scan state as failed when no scan actually holds the lock (e.g. after a crash)."""
+    state = _read_json_file(SCAN_STATE_PATH)
+    if not state or not state.get("running") or not SCAN_LOCK_PATH.is_file():
         return
+    try:
+        fd = _scan_lock()
+    except BridgeError:
+        return  # a scan really is running
+    os.close(fd)
+    log.warning("scan state claims a running scan but the lock is free; marking it as failed")
+    _write_scan_state({"running": False, "status": "failed", "finished": _iso(_now_utc()),
+                       "error": "the scan process ended unexpectedly", "profile_id": state.get("profile_id", ""),
+                       "profile_title": state.get("profile_title", ""), "source": state.get("source", "")})
 
-    on_calendar = _build_on_calendar(config)
 
-    # Write drop-in override
-    override_dir = _TIMER_OVERRIDE_DIR
-    override_dir.mkdir(parents=True, exist_ok=True)
-    override_conf = override_dir / "override.conf"
-    override_conf.write_text(f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n")
+def _resolve_scan_request(args: list[str]) -> ScanRequest:
+    config = load_config()
+    positional = _positional(args)
+    base_profile_id = positional[0] if positional else config.get("active_profile")
+    if not base_profile_id:
+        raise BridgeError("no profile given and no active profile configured")
+    if not XCCDF_ID_RE.match(base_profile_id):
+        raise BridgeError(f"invalid profile id: {base_profile_id}")
 
-    # Reload systemd to pick up the override
-    rc, _stdout, stderr = run_cmd(["systemctl", "daemon-reload"])
+    datastream = resolve_datastream(_opt(args, "--datastream"), config)
+    benchmark = load_benchmark(datastream)
+    index = _BenchmarkIndex(benchmark)
+    profile = _find_profile(benchmark, base_profile_id)
+    if profile is None:
+        raise BridgeError(f"profile not found in datastream: {base_profile_id}")
+    selection = index.selection(base_profile_id)
+    profile_id = base_profile_id
+    profile_title = _text(profile.find(TAG_TITLE))
+
+    tailoring_path = _opt(args, "--tailoring-path")
+    if tailoring_path is None and "--no-tailoring" not in args:
+        tailoring_path = config.get("tailorings", {}).get(base_profile_id)
+        if tailoring_path and not Path(tailoring_path).is_file():
+            tailoring_path = None
+    if tailoring_path:
+        tailoring = parse_tailoring_file(tailoring_path)
+        profile_id = tailoring["profile_id"]
+        profile_title = tailoring["title"] or profile_title
+        selects = [
+            ET.Element(TAG_SELECT, {"idref": m["idref"], "selected": str(m["action"] == ACTION_SELECT).lower()})
+            for m in tailoring["modifications"] if m["action"] in (ACTION_SELECT, ACTION_UNSELECT)
+        ]
+        index.apply_selects(selection, selects)
+
+    return ScanRequest(
+        profile_id=profile_id,
+        base_profile_id=base_profile_id,
+        profile_title=profile_title,
+        datastream=datastream,
+        tailoring_path=tailoring_path,
+        source=_opt(args, "--source") or "interactive",
+        total_rules=sum(1 for v in selection.values() if v),
+    )
+
+
+class _OscapRun:
+    """Run ``oscap xccdf eval --progress`` while streaming progress and forwarding termination."""
+
+    def __init__(self, cmd: list[str], request: ScanRequest, started: str) -> None:
+        self.cmd = cmd
+        self.request = request
+        self.started = started
+        self.interrupted = False
+        self.proc: subprocess.Popen[str] | None = None
+        self.current = 0
+        self.last_state_write = 0.0
+
+    def _on_signal(self, _signum: int, _frame: object) -> None:
+        self.interrupted = True
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+
+    def _state(self, rule_id: str, result: str) -> JsonDict:
+        total = max(self.request["total_rules"], self.current)
+        return {
+            "running": True,
+            "pid": os.getpid(),
+            "source": self.request["source"],
+            "profile_id": self.request["profile_id"],
+            "profile_title": self.request["profile_title"],
+            "started": self.started,
+            "current": self.current,
+            "total": total,
+            "progress": int(self.current / total * 100) if total else 0,
+            "rule_id": rule_id,
+            "result": result,
+        }
+
+    def _progress(self, rule_id: str, result: str) -> None:
+        self.current += 1
+        state = self._state(rule_id, result)
+        if self.request["source"] == "interactive":
+            output_json({"type": "progress", **state})
+        now = time.monotonic()
+        if now - self.last_state_write >= STATE_WRITE_INTERVAL:
+            self.last_state_write = now
+            _write_scan_state(state)
+
+    def run(self) -> tuple[int, str]:
+        """Return (exit status, stderr text)."""
+        signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        handlers = {sig: signal.signal(sig, self._on_signal) for sig in signals}
+        _write_scan_state(self._state("", ""))
+        try:
+            with tempfile.TemporaryFile(mode="w+") as stderr_file:
+                self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True)
+                if self.proc.stdout is None:
+                    raise BridgeError("failed to capture oscap output")
+                for line in self.proc.stdout:
+                    rule_id, sep, result = line.strip().partition(":")
+                    if sep and rule_id.startswith("xccdf_"):
+                        self._progress(rule_id, result)
+                rc = self.proc.wait()
+                stderr_file.seek(0)
+                stderr = stderr_file.read()
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        return rc, stderr
+
+
+def _save_result(request: ScanRequest, parsed: ParsedArf, *, result_id: str, timestamp: str,
+                 status: str) -> ScanResult:
+    json_path, arf_path = _result_paths(result_id)
+    result = ScanResult(
+        id=result_id,
+        timestamp=timestamp,
+        start_time=parsed["start_time"],
+        end_time=parsed["end_time"],
+        profile_id=parsed["profile_id"] or request["profile_id"],
+        profile_title=request["profile_title"],
+        base_profile_id=request["base_profile_id"],
+        benchmark_id=parsed["benchmark_id"],
+        benchmark_version=parsed["benchmark_version"],
+        datastream=request["datastream"],
+        tailoring_path=request["tailoring_path"],
+        tailored=request["tailoring_path"] is not None,
+        test_result_id=parsed["test_result_id"],
+        status=status,
+        score=parsed["score"],
+        xccdf_score=parsed["xccdf_score"],
+        counts=_count_results(parsed["results"]),
+        results=parsed["results"],
+        arf_path=str(arf_path),
+        json_path=str(json_path),
+    )
+    _atomic_write(json_path, json.dumps(result, indent=1) + "\n")
+    return result
+
+
+def run_scan(args: list[str]) -> ScanResult:
+    oscap_path = _require_oscap()
+    request = _resolve_scan_request(args)
+    lock_fd = _scan_lock()
+    try:
+        _ensure_dir(RESULTS_DIR)
+        started_dt = _now_utc()
+        result_id = f"{started_dt.strftime('%Y-%m-%dT%H%M%S')}-{_profile_short_name(request['base_profile_id'])}"
+        _json_path, arf_path = _result_paths(result_id)
+
+        cmd = [oscap_path, "xccdf", "eval", "--progress", "--profile", request["profile_id"],
+               "--results-arf", str(arf_path)]
+        if request["tailoring_path"]:
+            cmd += ["--tailoring-file", request["tailoring_path"]]
+        cmd.append(request["datastream"])
+        log.info("starting scan: %s", " ".join(cmd))
+
+        runner = _OscapRun(cmd, request, _iso(started_dt))
+        rc, stderr = runner.run()
+        finished = _iso(_now_utc())
+
+        def fail(message: str, status: str) -> BridgeError:
+            _write_scan_state({"running": False, "status": status, "finished": finished, "error": message,
+                               "profile_id": request["profile_id"], "source": request["source"]})
+            arf_path.unlink(missing_ok=True)
+            return BridgeError(message)
+
+        if runner.interrupted:
+            raise fail("the scan was cancelled", "cancelled")
+        if rc == OSCAP_EXIT_ERROR:
+            raise fail(f"oscap failed: {stderr.strip()[-ERROR_TAIL:] or 'unknown error'}", "failed")
+        if not arf_path.is_file():
+            raise fail(f"oscap did not produce a results file: {stderr.strip()[-ERROR_TAIL:]}", "failed")
+
+        parsed = parse_arf(str(arf_path))
+        result = _save_result(request, parsed, result_id=result_id, timestamp=_iso(started_dt), status="complete")
+        prune_results(load_config().get("max_results", DEFAULT_MAX_RESULTS))
+        _write_scan_state({"running": False, "status": "complete", "finished": finished, "result_id": result_id,
+                           "score": result["score"], "profile_id": request["profile_id"],
+                           "profile_title": request["profile_title"], "source": request["source"],
+                           "counts": result["counts"]})
+        log.info("scan complete: %s score=%.1f", result_id, result["score"])
+        return result
+    finally:
+        os.close(lock_fd)
+
+
+def cmd_scan(args: list[str]) -> None:
+    result = run_scan(args)
+    output_json({"type": "done", "result": result})
+
+
+# ---------------------------------------------------------------------------
+# Remediation
+# ---------------------------------------------------------------------------
+
+_RISK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
+    (re.compile(r"/etc/sudoers"), RISK_HIGH, "Changes sudo policy and may lock out administrators"),
+    (re.compile(r"/etc/pam\.d/|(?:^|\s)authselect\b", re.MULTILINE), RISK_HIGH,
+     "Changes authentication configuration and may prevent logins"),
+    (re.compile(r"/etc/firewalld/|(?:^|\s)firewall-cmd\b|(?:^|\s)nft\b|(?:^|\s)iptables\b", re.MULTILINE), RISK_HIGH,
+     "Changes firewall rules and may block network access, including Cockpit"),
+    (re.compile(r"/etc/selinux/|(?:^|\s)semanage\b|(?:^|\s)setsebool\b", re.MULTILINE), RISK_HIGH,
+     "Changes SELinux policy and may break services"),
+    (re.compile(r"\bsshd_config\b"), RISK_HIGH, "Changes SSH server configuration and may lock out remote sessions"),
+    (re.compile(r"/etc/fstab|(?:^|\s)mount\b", re.MULTILINE), RISK_HIGH, "Changes mount options and may affect boot"),
+    (re.compile(r"/etc/default/grub|(?:^|\s)grub2?-mkconfig\b|(?:^|\s)grubby\b", re.MULTILINE), RISK_HIGH,
+     "Changes boot loader configuration"),
+    (re.compile(r"(?:^|\s)systemctl\b", re.MULTILINE), RISK_MEDIUM, "Starts, stops or masks system services"),
+    (re.compile(r"/etc/audit/|/etc/rsyslog|/etc/cron|/etc/login\.defs|/etc/security/"), RISK_MEDIUM,
+     "Changes system-wide policy files"),
+    (re.compile(r"(?:^|\s)(?:dnf|yum|apt(?:-get)?|zypper)\s+(?:-y\s+)?(?:remove|erase|purge)\b", re.MULTILINE),
+     RISK_MEDIUM, "Removes software packages"),
+]
+
+# oscap emits: "# BEGIN fix (N / M) for 'rule_id'" ... "# END fix for 'rule_id'"
+# (older releases: "# BEGIN fix (rule_id) for 'short_name'" ... "# END fix (rule_id) ...")
+_FIX_BLOCK_RE = re.compile(
+    r"^#+ BEGIN fix \(([^)]*)\)(?: for '([^']*)')?[^\n]*\n(.*?)^#+ END fix\b[^\n]*$",
+    re.MULTILINE | re.DOTALL,
+)
+_MISSING_FIX_RE = re.compile(r"IS MISSING!")
+_RULE_LINE_RE = re.compile(r"^#{3,}\s*$")
+
+
+def classify_risk(snippet: str) -> tuple[str, str]:
+    """Return (risk level, reason) for a remediation snippet."""
+    for pattern, level, reason in _RISK_PATTERNS:
+        if pattern.search(snippet):
+            return level, reason
+    return RISK_LOW, ""
+
+
+def parse_fix_script(script: str) -> list[FixRuleInfo]:
+    rules: list[FixRuleInfo] = []
+    for match in _FIX_BLOCK_RE.finditer(script):
+        head, quoted, body = match.group(1), match.group(2), match.group(3)
+        rule_id = quoted if quoted and quoted.startswith("xccdf_") else head
+        lines = [line.rstrip() for line in body.splitlines() if not _RULE_LINE_RE.match(line)]
+        snippet = "\n".join(lines).strip("\n").strip()
+        risk, reason = classify_risk(snippet)
+        rules.append(FixRuleInfo(id=rule_id, title="", fix_snippet=snippet, risk_level=risk, risk_reason=reason,
+                                 has_fix=not _MISSING_FIX_RE.search(snippet)))
+    return rules
+
+
+def extract_arf_tailoring(arf_path: str) -> str | None:
+    """Write the tailoring embedded in an ARF (if any) to a temporary file and return its path.
+
+    A scan run with a tailoring file records that tailoring inside the ARF.  ``oscap
+    xccdf generate fix`` cannot resolve the customized profile from the ARF alone, so
+    the embedded copy (exactly what was evaluated) is handed back to it.
+    """
+    try:
+        root = ET.parse(arf_path).getroot()  # noqa: S314
+    except (ET.ParseError, OSError) as exc:
+        raise BridgeError(f"cannot read results file: {exc}") from exc
+    tailoring = next(root.iter(TAG_TAILORING), None)
+    if tailoring is None:
+        return None
+    ET.register_namespace("xccdf", NS_XCCDF)
+    fd, name = tempfile.mkstemp(prefix="cockpit-oscap-tailoring-", suffix=".xml")
+    with os.fdopen(fd, "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write(ET.tostring(tailoring, encoding="unicode"))
+    return name
+
+
+def generate_fix(result: ScanResult) -> FixInfo:
+    """Generate bash remediation for the rules that failed in a saved result."""
+    oscap_path = _require_oscap()
+    if not result["arf_path"] or not Path(result["arf_path"]).is_file():
+        raise BridgeError("the results file for this scan is no longer available")
+    test_result_id = result["test_result_id"] or parse_arf(result["arf_path"])["test_result_id"]
+    cmd = [oscap_path, "xccdf", "generate", "fix", "--fix-type", "bash", "--result-id", test_result_id]
+    tailoring_file = extract_arf_tailoring(result["arf_path"])
+    if tailoring_file:
+        cmd += ["--tailoring-file", tailoring_file]
+    cmd.append(result["arf_path"])
+    try:
+        rc, stdout, stderr = run_cmd(cmd, timeout=FIX_TIMEOUT)
+    finally:
+        if tailoring_file:
+            Path(tailoring_file).unlink(missing_ok=True)
     if rc != 0:
-        output_error(f"systemctl daemon-reload failed: {stderr[:500]}")
-        return
+        raise BridgeError(f"oscap generate fix failed: {stderr.strip()[-ERROR_TAIL:]}")
+    titles = {r["rule_id"]: r["title"] for r in result["results"]}
+    rules = parse_fix_script(stdout)
+    for rule in rules:
+        rule["title"] = titles.get(rule["id"], "")
+    return FixInfo(result_id=result["id"], script=stdout, rules=rules)
 
-    # Update config.json active_profile if profile_id was provided
-    profile_id = config.get("profile_id")
-    if profile_id:
-        _update_active_profile(profile_id)
 
-    output_json(_get_timer_status())
+def cmd_generate_fix(args: list[str]) -> None:
+    positional = _positional(args)
+    if not positional:
+        raise BridgeError("generate-fix requires a result id")
+    output_json(generate_fix(_load_result(positional[0])))
+
+
+def _rule_ids_arg(args: list[str]) -> list[str]:
+    raw = _parse_json_arg(_opt(args, "--rules") or "[]", "rules")
+    if not isinstance(raw, list) or not all(isinstance(r, str) and XCCDF_ID_RE.match(r) for r in raw):
+        raise BridgeError("--rules must be a JSON array of rule ids")
+    return list(dict.fromkeys(raw))
+
+
+def remediate(result: ScanResult, rule_ids: list[str]) -> RemediateResult:
+    """Apply the generated fix for each selected rule, one rule at a time."""
+    fix = generate_fix(result)
+    snippets = {r["id"]: r for r in fix["rules"]}
+    missing = [rid for rid in rule_ids if rid not in snippets or not snippets[rid]["has_fix"]]
+    if missing:
+        raise BridgeError(f"no remediation is available for: {', '.join(missing)}")
+
+    _ensure_dir(REMEDIATION_DIR)
+    script_path = REMEDIATION_DIR / f"{_now_utc().strftime('%Y-%m-%dT%H%M%S')}-{result['id']}.sh"
+    header = ["#!/usr/bin/env bash", f"# Remediation applied by cockpit-oscap for scan {result['id']}", ""]
+    body = [f"# --- {rid} ---\n{snippets[rid]['fix_snippet']}\n" for rid in rule_ids]
+    _atomic_write(script_path, "\n".join(header + body))
+    script_path.chmod(0o700)
+
+    outcomes: list[RuleRemediation] = []
+    for i, rid in enumerate(rule_ids, start=1):
+        output_json({"type": "progress", "current": i, "total": len(rule_ids), "rule_id": rid})
+        try:
+            proc = subprocess.run(["bash", "-c", snippets[rid]["fix_snippet"]], capture_output=True,
+                                  text=True, check=False, timeout=REMEDIATE_RULE_TIMEOUT)
+            outcome = RuleRemediation(rule_id=rid, success=proc.returncode == 0, exit_status=proc.returncode,
+                                      output=proc.stdout[-ERROR_TAIL * 4:], errors=proc.stderr[-ERROR_TAIL * 4:])
+        except subprocess.TimeoutExpired:
+            outcome = RuleRemediation(rule_id=rid, success=False, exit_status=-1, output="",
+                                      errors=f"timed out after {REMEDIATE_RULE_TIMEOUT} seconds")
+        log.info("remediation %s: rc=%d", rid, outcome["exit_status"])
+        outcomes.append(outcome)
+    return RemediateResult(result_id=result["id"], success=all(o["success"] for o in outcomes),
+                           script_path=str(script_path), rules=outcomes)
+
+
+def cmd_remediate(args: list[str]) -> None:
+    positional = _positional(args)
+    if not positional:
+        raise BridgeError("remediate requires a result id")
+    rule_ids = _rule_ids_arg(args)
+    if not rule_ids:
+        raise BridgeError("no rules selected for remediation")
+    output_json({"type": "done", "result": remediate(_load_result(positional[0]), rule_ids)})
+
+
+def cmd_generate_report(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("generate-report requires a result id")
+    result = _load_result(args[0])
+    if not result["arf_path"] or not Path(result["arf_path"]).is_file():
+        raise BridgeError("the results file for this scan is no longer available")
+    rc, stdout, stderr = run_cmd([_require_oscap(), "xccdf", "generate", "report", result["arf_path"]],
+                                 timeout=REPORT_TIMEOUT)
+    if rc != 0:
+        raise BridgeError(f"oscap generate report failed: {stderr.strip()[-ERROR_TAIL:]}")
+    output_json({"id": result["id"], "html": stdout})
+
+
+# ---------------------------------------------------------------------------
+# Scheduled scans (systemd timer)
+# ---------------------------------------------------------------------------
+
+
+def _systemctl_show(unit: str, properties: list[str]) -> dict[str, str]:
+    rc, stdout, _stderr = run_cmd(["systemctl", "show", unit, f"--property={','.join(properties)}"])
+    props: dict[str, str] = {}
+    if rc != 0:
+        return props
+    for line in stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props[key] = value
+    return props
+
+
+def _parse_systemd_time(value: str) -> str:
+    """Convert systemctl's 'Thu 2026-03-26 00:00:00 UTC' into ISO 8601 (local zone unless UTC)."""
+    if not value or value in ("n/a", "0"):
+        return ""
+    match = re.match(r"^(?:\w{3} )?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?: (\S+))?$", value.strip())
+    if not match:
+        return value
+    naive = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+    zone = match.group(2) or ""
+    aware = naive.replace(tzinfo=timezone.utc) if zone == "UTC" else naive.astimezone()
+    return _iso(aware)
+
+
+def _read_calendar_override() -> str:
+    override = TIMER_OVERRIDE_DIR / "override.conf"
+    if override.is_file():
+        for line in override.read_text().splitlines():
+            if line.startswith("OnCalendar=") and line[len("OnCalendar="):].strip():
+                return line[len("OnCalendar="):].strip()
+    return DEFAULT_TIMER_FREQUENCY
+
+
+def get_timer_status() -> TimerStatus:
+    timer = _systemctl_show(TIMER_UNIT, ["LoadState", "ActiveState", "UnitFileState", "NextElapseUSecRealtime",
+                                        "LastTriggerUSec", "TimersCalendar"])
+    service = _systemctl_show(SERVICE_UNIT, ["ActiveState", "Result", "ExecMainExitTimestamp"])
+    installed = timer.get("LoadState", "not-found") not in ("not-found", "")
+    calendar = _read_calendar_override()
+    if not installed:
+        calendar = ""
+    return TimerStatus(
+        status=timer.get("ActiveState", "unknown") if installed else "not-found",
+        enabled=timer.get("UnitFileState", "") in ("enabled", "enabled-runtime", "linked", "static"),
+        installed=installed,
+        next_run=_parse_systemd_time(timer.get("NextElapseUSecRealtime", "")),
+        last_run=_parse_systemd_time(timer.get("LastTriggerUSec", "")),
+        calendar=calendar,
+        service_state=service.get("ActiveState", "unknown"),
+        service_result=service.get("Result", ""),
+        last_scan_finished=_parse_systemd_time(service.get("ExecMainExitTimestamp", "")),
+    )
+
+
+def _normalize_time(value: str) -> str:
+    match = re.match(r"^(\d{1,2}):(\d{1,2})(?::(\d{2}))?$", value.strip())
+    if not match:
+        raise BridgeError(f"invalid time: {value}")
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour >= HOURS_PER_DAY or minute >= MINUTES_PER_HOUR:
+        raise BridgeError(f"invalid time: {value}")
+    return f"{hour:02d}:{minute:02d}:00"
+
+
+def build_on_calendar(config: JsonDict) -> str:
+    """Translate the schedule form into a systemd OnCalendar expression."""
+    frequency = str(config.get("frequency", DEFAULT_TIMER_FREQUENCY))
+    day = str(config.get("day", "") or "")
+    time_str = _normalize_time(str(config.get("time", "") or "03:00"))
+
+    if frequency == "custom":
+        calendar = str(config.get("calendar", "") or "").strip()
+        if not calendar:
+            raise BridgeError("a custom schedule requires a calendar expression")
+        check = validate_calendar(calendar)
+        if not check["valid"]:
+            raise BridgeError(check["error"] or f"invalid calendar expression: {calendar}")
+        return check["normalized"] or calendar
+    if frequency == "daily":
+        return f"*-*-* {time_str}"
+    if frequency == "weekly":
+        weekday = day.title()[:3] if day else "Mon"
+        if weekday not in WEEKDAYS:
+            raise BridgeError(f"invalid day of week: {day}")
+        return f"{weekday} *-*-* {time_str}"
+    if frequency == "monthly":
+        try:
+            day_num = int(day or "1")
+        except ValueError as exc:
+            raise BridgeError(f"invalid day of month: {day}") from exc
+        if not 1 <= day_num <= MAX_DAY_OF_MONTH:
+            raise BridgeError(f"day of month must be between 1 and {MAX_DAY_OF_MONTH}")
+        return f"*-*-{day_num:02d} {time_str}"
+    raise BridgeError(f"unknown frequency: {frequency}")
+
+
+def validate_calendar(spec: str) -> CalendarCheck:
+    """Validate a calendar expression with systemd-analyze when available."""
+    if not spec.strip() or "\n" in spec:
+        return CalendarCheck(valid=False, normalized="", next_elapse="", error="empty calendar expression")
+    analyze = shutil.which("systemd-analyze")
+    if analyze is None:
+        return CalendarCheck(valid=True, normalized=spec.strip(), next_elapse="", error="")
+    rc, stdout, stderr = run_cmd([analyze, "calendar", spec.strip()])
+    if rc != 0:
+        return CalendarCheck(valid=False, normalized="", next_elapse="",
+                             error=(stderr or stdout).strip().splitlines()[-1] if (stderr or stdout).strip() else
+                             "invalid calendar expression")
+    normalized = ""
+    next_elapse = ""
+    for line in stdout.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "Normalized form":
+            normalized = value.strip()
+        elif key.strip() == "Next elapse":
+            next_elapse = _parse_systemd_time(value.strip())
+    return CalendarCheck(valid=True, normalized=normalized or spec.strip(), next_elapse=next_elapse, error="")
+
+
+def _systemctl(*argv: str) -> None:
+    rc, _stdout, stderr = run_cmd(["systemctl", *argv])
+    if rc != 0:
+        raise BridgeError(f"systemctl {' '.join(argv)} failed: {stderr.strip()[-ERROR_TAIL:]}")
+
+
+def _timer_configure(config_json: str) -> None:
+    raw = _parse_json_arg(config_json, "timer configuration")
+    if not isinstance(raw, dict):
+        raise BridgeError("timer configuration must be a JSON object")
+    on_calendar = build_on_calendar(raw)
+    profile_id = raw.get("profile_id")
+    if profile_id is not None:
+        if not isinstance(profile_id, str) or not XCCDF_ID_RE.match(profile_id):
+            raise BridgeError("invalid profile id")
+        save_config(_config_patch(load_config(), {"active_profile": profile_id}))
+    _atomic_write(TIMER_OVERRIDE_DIR / "override.conf",
+                  f"# Managed by cockpit-oscap\n[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n")
+    _systemctl("daemon-reload")
+    if get_timer_status()["status"] == "active":
+        _systemctl("restart", TIMER_UNIT)
 
 
 def cmd_manage_timer(args: list[str]) -> None:
-    """Handle the manage-timer command.
-
-    Actions:
-        status    — Return timer state, next scheduled run, and frequency.
-        enable    — Enable and start the timer unit.
-        disable   — Disable and stop the timer unit.
-        configure — Write a drop-in override for OnCalendar and optionally
-                    update config.json active_profile.  Requires a JSON
-                    config object as the second argument.
-    """
-    _valid_actions = ("status", "enable", "disable", "configure")
-
-    if not args:
-        output_error(f"manage-timer requires an action: {', '.join(_valid_actions)}")
-        return  # unreachable after output_error
-
+    actions = ("status", "enable", "disable", "configure", "run-now")
+    if not args or args[0] not in actions:
+        raise BridgeError(f"manage-timer requires an action: {', '.join(actions)}")
     action = args[0]
-    if action not in _valid_actions:
-        output_error(f"unknown manage-timer action: {action} (expected one of {', '.join(_valid_actions)})")
-        return
-
-    if action == "status":
-        output_json(_get_timer_status())
-    elif action == "enable":
-        _timer_enable()
+    if action == "enable":
+        _systemctl("enable", "--now", TIMER_UNIT)
     elif action == "disable":
-        _timer_disable()
-    else:
-        _timer_configure(args)
+        _systemctl("disable", "--now", TIMER_UNIT)
+    elif action == "configure":
+        if len(args) < REQUIRED_PAIR:
+            raise BridgeError("manage-timer configure requires a JSON configuration argument")
+        _timer_configure(args[1])
+    elif action == "run-now":
+        _systemctl("start", "--no-block", SERVICE_UNIT)
+    output_json(get_timer_status())
 
 
-def _update_active_profile(profile_id: str) -> None:
-    """Write or update the active_profile field in config.json."""
-    existing: dict[str, object] = {}
-    if CONFIG_PATH.is_file():
-        try:
-            with CONFIG_PATH.open() as f:
-                existing = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    existing["active_profile"] = profile_id
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with CONFIG_PATH.open("w") as f:
-        json.dump(existing, f, indent=2)
-        f.write("\n")
+def cmd_validate_calendar(args: list[str]) -> None:
+    if not args:
+        raise BridgeError("validate-calendar requires a calendar expression")
+    output_json(validate_calendar(args[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -1370,44 +2042,46 @@ def _update_active_profile(profile_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 HANDLERS: dict[str, Callable[[list[str]], None]] = {
-    Command.DETECT_BACKEND: cmd_detect_backend,
-    Command.LIST_PROFILES: cmd_list_profiles,
-    Command.PROFILE_RULES: cmd_profile_rules,
-    Command.SCAN: cmd_scan,
-    Command.GENERATE_FIX: cmd_generate_fix,
-    Command.APPLY_FIX: cmd_apply_fix,
-    Command.MANAGE_TIMER: cmd_manage_timer,
-    Command.CREATE_TAILORING: cmd_create_tailoring,
-    Command.PARSE_TAILORING: cmd_parse_tailoring,
+    "detect-backend": cmd_detect_backend,
+    "get-config": cmd_get_config,
+    "set-config": cmd_set_config,
+    "list-profiles": cmd_list_profiles,
+    "profile-rules": cmd_profile_rules,
+    "rule-info": cmd_rule_info,
+    "scan": cmd_scan,
+    "list-results": cmd_list_results,
+    "get-result": cmd_get_result,
+    "delete-result": cmd_delete_result,
+    "generate-report": cmd_generate_report,
+    "generate-fix": cmd_generate_fix,
+    "remediate": cmd_remediate,
+    "create-tailoring": cmd_create_tailoring,
+    "parse-tailoring": cmd_parse_tailoring,
+    "import-tailoring": cmd_import_tailoring,
+    "delete-tailoring": cmd_delete_tailoring,
+    "manage-timer": cmd_manage_timer,
+    "validate-calendar": cmd_validate_calendar,
 }
 
 
-def main() -> None:
-    """Parse argv and dispatch to the appropriate handler."""
-    if len(sys.argv) < MIN_ARGC:
-        output_error("usage: oscap-bridge.py <command> [args...]")
-        return  # unreachable after output_error, but keeps mypy happy
-
-    command = sys.argv[1]
-    log.info("command=%s args=%s", command, sys.argv[2:])
-
+def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        output_error(f"usage: oscap-bridge.py <command> [args...]; commands: {', '.join(HANDLERS)}")
+        return
+    command, args = argv[0], argv[1:]
     handler = HANDLERS.get(command)
     if handler is None:
-        log.error("unknown command: %s", command)
         output_error(f"unknown command: {command}")
         return
-
+    log.debug("command=%s args=%s", command, args)
     try:
-        handler(sys.argv[2:])
-        log.info("command=%s completed successfully", command)
-    except SystemExit:
-        raise  # let output_error's sys.exit propagate
-    except subprocess.CalledProcessError as exc:
-        log.error("command=%s subprocess failed: %s stderr=%s", command, exc.cmd, exc.stderr)
-        output_error(f"subprocess failed: {exc.cmd}")
+        handler(args)
+    except BridgeError as exc:
+        output_error(str(exc))
     except Exception:
         log.error("command=%s unhandled exception:\n%s", command, traceback.format_exc())
-        output_error(f"internal error: {traceback.format_exc()}")
+        output_error(f"internal error: {traceback.format_exc().strip().splitlines()[-1]}")
 
 
 if __name__ == "__main__":

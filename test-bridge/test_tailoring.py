@@ -1,190 +1,127 @@
-"""Tests for create-tailoring and parse-tailoring commands."""
+"""Tailoring creation, parsing, import and deletion."""
+# mypy: disallow-untyped-defs=false, disallow-untyped-decorators=false, disallow-untyped-calls=false
+
 from __future__ import annotations
 
-import importlib.util
-import os
-import pathlib
-import sys
-import textwrap
+import json
 import xml.etree.ElementTree as ET
 
 import pytest
+from conftest import PROFILE_BASE, RULE_AUDIT, RULE_ROOT_LOGIN, VALUE_TIMEOUT
 
-BRIDGE_PATH = pathlib.Path(__file__).resolve().parent.parent / "src" / "oscap-bridge.py"
-
-EXPECTED_SELECT_COUNT = 2
-
-
-@pytest.fixture
-def bridge(tmp_path: pathlib.Path):
-    """Import oscap-bridge.py as a module with DATA_DIR pointed at tmp_path."""
-    # Set env var BEFORE importing so the module picks it up
-    os.environ["COCKPIT_OSCAP_DATA_DIR"] = str(tmp_path)
-    spec = importlib.util.spec_from_file_location("oscap_bridge_tailoring", str(BRIDGE_PATH))
-    assert spec is not None
-    assert spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["oscap_bridge_tailoring"] = mod
-    spec.loader.exec_module(mod)
-    yield mod
-    # Cleanup
-    os.environ.pop("COCKPIT_OSCAP_DATA_DIR", None)
-    sys.modules.pop("oscap_bridge_tailoring", None)
-
-
-# ---------------------------------------------------------------------------
-# Synthetic tailoring XML for parse tests
-# ---------------------------------------------------------------------------
-
-SYNTHETIC_TAILORING_XML = textwrap.dedent("""\
-<?xml version="1.0" encoding="UTF-8"?>
-<xccdf:Tailoring xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2"
-                 id="cockpit-oscap-tailoring">
-  <xccdf:version time="2026-03-19T00:00:00">1</xccdf:version>
-  <xccdf:Profile id="cockpit_oscap_custom_profile"
-                 extends="xccdf_org.ssgproject.content_profile_ospp">
-    <xccdf:title>Custom profile based on ospp</xccdf:title>
-    <xccdf:select idref="xccdf_org.ssgproject.content_rule_package_audit_installed"
-                  selected="true"/>
-    <xccdf:select idref="xccdf_org.ssgproject.content_rule_no_empty_passwords"
-                  selected="false"/>
-    <xccdf:set-value idref="xccdf_org.ssgproject.content_value_var_password_minlen">12</xccdf:set-value>
-  </xccdf:Profile>
-</xccdf:Tailoring>
-""")
-
-# Base profile ID used across tests
-_BASE_PROFILE = "xccdf_org.ssgproject.content_profile_ospp"
-
-# Reusable modifications list for create tests
-_FULL_MODIFICATIONS: list[dict[str, str]] = [
-    {
-        "rule_id": "xccdf_org.ssgproject.content_rule_package_audit_installed",
-        "action": "enable",
-    },
-    {
-        "rule_id": "xccdf_org.ssgproject.content_rule_no_empty_passwords",
-        "action": "disable",
-    },
-    {
-        "rule_id": "xccdf_org.ssgproject.content_value_var_password_minlen",
-        "action": "set-value",
-        "value": "12",
-    },
+NS = "http://checklists.nist.gov/xccdf/1.2"
+MODIFICATIONS = [
+    {"idref": RULE_AUDIT, "action": "unselect"},
+    {"idref": RULE_ROOT_LOGIN, "action": "select"},
+    {"idref": VALUE_TIMEOUT, "action": "refine-value", "selector": "5_minutes"},
+    {"idref": VALUE_TIMEOUT, "action": "set-value", "value": "12"},
 ]
 
 
-# ---------------------------------------------------------------------------
-# create-tailoring tests
-# ---------------------------------------------------------------------------
+def test_build_tailoring_xml_is_valid_xccdf(bridge, datastream):
+    profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    assert profile_id == f"{PROFILE_BASE}_customized"
+    root = ET.fromstring(xml)  # noqa: S314
+    assert root.tag == f"{{{NS}}}Tailoring"
+    assert root.get("id") == "xccdf_org.cockpit-project.oscap_tailoring_default"
+    children = [c.tag.split("}")[1] for c in root]
+    assert children == ["benchmark", "version", "Profile"]
+    benchmark = root.find(f"{{{NS}}}benchmark")
+    version = root.find(f"{{{NS}}}version")
+    profile = root.find(f"{{{NS}}}Profile")
+    assert benchmark is not None
+    assert version is not None
+    assert profile is not None
+    assert benchmark.get("href") == datastream
+    assert version.get("time")
+    assert profile.get("extends") == PROFILE_BASE
+    title = profile.find(f"{{{NS}}}title")
+    refine = profile.find(f"{{{NS}}}refine-value")
+    set_value = profile.find(f"{{{NS}}}set-value")
+    assert title is not None
+    assert refine is not None
+    assert set_value is not None
+    assert title.text == "Base Profile (customized)"
+    selects = {s.get("idref"): s.get("selected") for s in profile.findall(f"{{{NS}}}select")}
+    assert selects == {RULE_AUDIT: "false", RULE_ROOT_LOGIN: "true"}
+    assert refine.get("selector") == "5_minutes"
+    assert set_value.text == "12"
 
 
-class TestCreateTailoring:
-    """Tests for the _build_tailoring_xml helper function."""
-
-    def test_create_tailoring_generates_xml(self, bridge):
-        """Create tailoring from base profile with modifications, verify valid XCCDF XML."""
-        result = bridge._build_tailoring_xml(_BASE_PROFILE, _FULL_MODIFICATIONS)
-        xml_str = result["tailoring_xml"]
-
-        # Must be parseable XML
-        root = ET.fromstring(xml_str)  # noqa: S314
-
-        # Root element is xccdf:Tailoring
-        ns = "http://checklists.nist.gov/xccdf/1.2"
-        assert root.tag == f"{{{ns}}}Tailoring"
-
-        # Must contain a Profile element
-        profile = root.find(f"{{{ns}}}Profile")
-        assert profile is not None
-        assert profile.get("extends") == _BASE_PROFILE
-
-        # Must contain select and set-value elements
-        selects = profile.findall(f"{{{ns}}}select")
-        assert len(selects) == EXPECTED_SELECT_COUNT
-
-        set_values = profile.findall(f"{{{ns}}}set-value")
-        assert len(set_values) == 1
-
-    def test_create_tailoring_writes_file(self, bridge):
-        """Verify tailoring file is written to TAILORING_DIR."""
-        modifications = [
-            {
-                "rule_id": "xccdf_org.ssgproject.content_rule_package_audit_installed",
-                "action": "enable",
-            },
-        ]
-
-        result = bridge._build_tailoring_xml(_BASE_PROFILE, modifications)
-        path = pathlib.Path(result["path"])
-
-        assert path.exists()
-        assert path.suffix == ".xml"
-        assert "tailoring" in str(path.parent)
-        # File content should match returned XML
-        assert path.read_text() == result["tailoring_xml"]
-
-    def test_create_tailoring_roundtrip(self, bridge):
-        """Create then parse back, verify modifications match."""
-        create_result = bridge._build_tailoring_xml(_BASE_PROFILE, _FULL_MODIFICATIONS)
-
-        # Now parse it back
-        parse_result = bridge._parse_tailoring_file(create_result["path"])
-
-        assert parse_result["base_profile"] == _BASE_PROFILE
-        assert len(parse_result["modifications"]) == len(_FULL_MODIFICATIONS)
-
-        # Check each modification came back correctly
-        mods_by_id = {m["rule_id"]: m for m in parse_result["modifications"]}
-
-        audit_mod = mods_by_id["xccdf_org.ssgproject.content_rule_package_audit_installed"]
-        assert audit_mod["action"] == "enable"
-
-        pw_mod = mods_by_id["xccdf_org.ssgproject.content_rule_no_empty_passwords"]
-        assert pw_mod["action"] == "disable"
-
-        val_mod = mods_by_id["xccdf_org.ssgproject.content_value_var_password_minlen"]
-        assert val_mod["action"] == "set-value"
-        assert val_mod["value"] == "12"
+def test_parse_round_trip(bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    info = bridge.parse_tailoring_xml(xml)
+    assert info["base_profile_id"] == PROFILE_BASE
+    assert info["profile_id"] == f"{PROFILE_BASE}_customized"
+    assert info["benchmark_href"] == datastream
+    assert info["title"] == "Base Profile (customized)"
+    assert info["modifications"] == MODIFICATIONS
 
 
-# ---------------------------------------------------------------------------
-# parse-tailoring tests
-# ---------------------------------------------------------------------------
+def test_parse_tailoring_errors(bridge):
+    with pytest.raises(bridge.BridgeError, match="invalid tailoring XML"):
+        bridge.parse_tailoring_xml("<broken")
+    with pytest.raises(bridge.BridgeError, match="not an XCCDF"):
+        bridge.parse_tailoring_xml("<root/>")
+    with pytest.raises(bridge.BridgeError, match="Profile"):
+        bridge.parse_tailoring_xml(f'<xccdf:Tailoring xmlns:xccdf="{NS}" id="x"/>')
+    with pytest.raises(bridge.BridgeError, match="cannot read"):
+        bridge.parse_tailoring_file("/nonexistent/tailoring.xml")
 
 
-class TestParseTailoring:
-    """Tests for the _parse_tailoring_file helper function."""
+@pytest.mark.parametrize("bad", [
+    "{}",
+    '[{"idref": "x y", "action": "select"}]',
+    f'[{{"idref": "{RULE_AUDIT}", "action": "enable"}}]',
+    f'[{{"idref": "{VALUE_TIMEOUT}", "action": "refine-value"}}]',
+    f'[{{"idref": "{VALUE_TIMEOUT}", "action": "set-value", "value": 3}}]',
+    "[1]",
+])
+def test_create_tailoring_validation(run_bridge, bad):
+    assert "error" in run_bridge("create-tailoring", PROFILE_BASE, bad, expect_rc=1)
 
-    def test_parse_tailoring_extracts_selects(self, bridge, tmp_path):
-        """Parse tailoring XML with select elements."""
-        tailoring_path = tmp_path / "test-tailoring.xml"
-        tailoring_path.write_text(SYNTHETIC_TAILORING_XML)
 
-        result = bridge._parse_tailoring_file(str(tailoring_path))
+def test_create_tailoring_cli_writes_file_and_config(run_bridge, bridge):
+    info = run_bridge("create-tailoring", PROFILE_BASE, json.dumps(MODIFICATIONS))
+    path = bridge.Path(info["path"])
+    assert path == bridge.TAILORING_DIR / "base-tailoring.xml"
+    assert path.read_text() == info["tailoring_xml"]
+    assert info["profile_id"] == f"{PROFILE_BASE}_customized"
+    assert info["modifications"] == MODIFICATIONS
+    assert run_bridge("get-config")["tailorings"] == {PROFILE_BASE: str(path)}
+    # legacy rule_id key is still accepted
+    info = run_bridge("create-tailoring", PROFILE_BASE, json.dumps([{"rule_id": RULE_AUDIT, "action": "select"}]))
+    assert info["modifications"] == [{"idref": RULE_AUDIT, "action": "select"}]
+    assert "error" in run_bridge("create-tailoring", "xccdf_org.test.content_profile_nope", "[]", expect_rc=1)
 
-        assert result["base_profile"] == _BASE_PROFILE
-        mods = result["modifications"]
 
-        # Find the select-based modifications
-        select_mods = [m for m in mods if m["action"] in ("enable", "disable")]
-        assert len(select_mods) == EXPECTED_SELECT_COUNT
+def test_parse_tailoring_cli_from_stdin_and_file(run_bridge, bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    info = run_bridge("parse-tailoring", "-", stdin=xml)
+    assert info["modifications"] == MODIFICATIONS
+    assert info["path"] == ""
+    path = bridge.TAILORING_DIR / "x.xml"
+    bridge._atomic_write(path, xml)
+    assert run_bridge("parse-tailoring", str(path))["path"] == str(path)
+    assert "error" in run_bridge("parse-tailoring", expect_rc=1)
 
-        mods_by_id = {m["rule_id"]: m for m in mods}
-        assert mods_by_id["xccdf_org.ssgproject.content_rule_package_audit_installed"]["action"] == "enable"
-        assert mods_by_id["xccdf_org.ssgproject.content_rule_no_empty_passwords"]["action"] == "disable"
 
-    def test_parse_tailoring_extracts_set_values(self, bridge, tmp_path):
-        """Parse tailoring with set-value elements."""
-        tailoring_path = tmp_path / "test-tailoring.xml"
-        tailoring_path.write_text(SYNTHETIC_TAILORING_XML)
+def test_import_tailoring_warns_on_mismatch(run_bridge, bridge, datastream):
+    _profile_id, xml = bridge.build_tailoring_xml(PROFILE_BASE, "Base Profile", MODIFICATIONS, datastream)
+    other = "xccdf_org.test.content_profile_extended"
+    info = run_bridge("import-tailoring", other, "-", stdin=xml)
+    assert other in info["warning"]
+    assert bridge.Path(info["path"]).read_text() == xml
+    assert run_bridge("get-config")["tailorings"] == {other: info["path"]}
+    info = run_bridge("import-tailoring", PROFILE_BASE, "-", stdin=xml)
+    assert info["warning"] == ""
+    assert "error" in run_bridge("import-tailoring", PROFILE_BASE, "-", stdin="<nope/>", expect_rc=1)
 
-        result = bridge._parse_tailoring_file(str(tailoring_path))
 
-        mods = result["modifications"]
-        set_value_mods = [m for m in mods if m["action"] == "set-value"]
-        assert len(set_value_mods) == 1
-
-        sv = set_value_mods[0]
-        assert sv["rule_id"] == "xccdf_org.ssgproject.content_value_var_password_minlen"
-        assert sv["value"] == "12"
+def test_delete_tailoring(run_bridge, bridge):
+    info = run_bridge("create-tailoring", PROFILE_BASE, json.dumps(MODIFICATIONS))
+    assert run_bridge("delete-tailoring", PROFILE_BASE) == {"deleted": True, "profile_id": PROFILE_BASE}
+    assert not bridge.Path(info["path"]).exists()
+    assert "tailorings" not in run_bridge("get-config")
+    assert run_bridge("delete-tailoring", PROFILE_BASE) == {"deleted": False, "profile_id": PROFILE_BASE}
+    assert "error" in run_bridge("delete-tailoring", expect_rc=1)

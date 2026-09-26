@@ -1,166 +1,337 @@
 /*
- * Typed API layer wrapping cockpit.spawn() calls to oscap-bridge.py.
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
- * Each function corresponds to one bridge command.  All calls run
- * with `superuser: "try"` so Cockpit can elevate via polkit when the
- * user session lacks privileges.
+ * Typed wrappers around the Python bridge (src/oscap-bridge.py).
+ *
+ * Every bridge command prints one JSON document on stdout; errors are
+ * reported as {"error": "..."} with exit status 1.  Long running commands
+ * (scan, remediate) stream newline-delimited progress objects first and
+ * finish with {"type": "done", "result": ...}.
+ *
+ * All commands run with `superuser: "try"`, so Cockpit escalates through
+ * polkit when the session has administrative access and falls back to
+ * the unprivileged user otherwise.
  */
 
 import cockpit from "cockpit";
+import * as python from "python";
 
 import bridgeScript from "./oscap-bridge.py";
-
 import type {
-    ApplyResult,
     BackendInfo,
+    CalendarCheck,
     Config,
+    ConfigPatch,
     FixInfo,
-    ParsedTailoring,
     ProfileInfo,
-    RuleInfo,
+    ProfileRules,
+    RemediateProgress,
+    RemediateResult,
+    ReportInfo,
+    ResultSummary,
+    RuleDetail,
+    ScanProgress,
     ScanResult,
+    TailoringInfo,
     TailoringModification,
-    TailoringResult,
+    TimerConfig,
     TimerStatus,
 } from "./types";
 
-// ---------------------------------------------------------------------------
-// Generic spawn helper
-// ---------------------------------------------------------------------------
+const _ = cockpit.gettext;
 
-const CONFIG_PATH = "/var/lib/cockpit-oscap/config.json";
+export const DATA_DIR = "/var/lib/cockpit-oscap";
+export const RESULTS_DIR = `${DATA_DIR}/results`;
+export const SCAN_STATE_PATH = `${DATA_DIR}/scan-state.json`;
+export const TIMER_UNIT = "cockpit-oscap-scan.timer";
 
-/**
- * Spawn the Python bridge with the given command and arguments,
- * parse the JSON response, and return it typed as `T`.
- */
-function spawn<T>(command: string, ...args: string[]): Promise<T> {
-    console.debug(`[cockpit-oscap] spawn: ${command}`, args);
-    return cockpit
-            .spawn(
-                ["python3", "-c", bridgeScript, command, ...args],
-                { superuser: "try", err: "message" },
-            )
-            .then(raw => {
-                let parsed: T;
-                try {
-                    parsed = JSON.parse(raw) as T;
-                } catch (e) {
-                    console.error(`[cockpit-oscap] ${command}: invalid JSON response:`, raw);
-                    throw new Error(`Bridge returned invalid JSON for ${command}`);
-                }
-                console.debug(`[cockpit-oscap] ${command}: success`);
-                return parsed;
-            })
-            .catch(error => {
-                console.error(`[cockpit-oscap] ${command}: failed:`, error);
-                throw error;
-            });
+/** An error reported by the bridge (or by the process running it). */
+export class BridgeError extends Error {
+    readonly exitStatus: number | null;
+    readonly cancelled: boolean;
+
+    constructor(message: string, exitStatus: number | null = null, cancelled = false) {
+        super(message);
+        this.name = "BridgeError";
+        this.exitStatus = exitStatus;
+        this.cancelled = cancelled;
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Public API functions
+// Low-level plumbing
 // ---------------------------------------------------------------------------
 
-/** Detect installed oscap/complyctl binaries and SCAP content. */
-export function detectBackend(): Promise<BackendInfo> {
-    return spawn<BackendInfo>("detect-backend");
+/* cockpit.spawn() rejects with (ProcessError, stdout) — the second argument
+ * is not part of the standard Promise typing, so describe the subset we use. */
+interface SpawnLike {
+    then(fn: (data: string) => void): SpawnLike;
+    catch(fn: (ex: unknown, data?: string) => void): SpawnLike;
+    stream(fn: (data: string) => void): SpawnLike;
+    input(data: string, stream: boolean): unknown;
+    close(problem?: string): void;
 }
 
-/** List available XCCDF profiles from the datastream. */
-export function listProfiles(datastreamPath?: string): Promise<ProfileInfo[]> {
+interface ErrorObject { error: string }
+interface ProgressLine { type: "progress" }
+interface DoneLine<T> { type: "done"; result: T }
+
+function parseJsonLine(line: string): unknown {
+    try {
+        return JSON.parse(line);
+    } catch {
+        return undefined;
+    }
+}
+
+function lastJsonLine(text: string): unknown {
+    const lines = text.split("\n").map(l => l.trim())
+            .filter(l => l.length > 0);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const parsed = parseJsonLine(lines[i]);
+        if (parsed !== undefined)
+            return parsed;
+    }
+    return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function isErrorObject(value: unknown): value is ErrorObject {
+    return isRecord(value) && typeof value.error === "string";
+}
+
+function isProgress(value: unknown): value is ProgressLine {
+    return isRecord(value) && value.type === "progress";
+}
+
+function isDone<T>(value: unknown): value is DoneLine<T> {
+    return isRecord(value) && value.type === "done" && "result" in value;
+}
+
+/** Turn a rejection from cockpit.spawn (plus any stdout captured) into a useful Error. */
+export function toError(ex: unknown, data?: string): BridgeError {
+    if (data) {
+        const parsed = lastJsonLine(data);
+        if (isErrorObject(parsed))
+            return new BridgeError(parsed.error);
+    }
+    if (ex instanceof BridgeError)
+        return ex;
+    if (isRecord(ex)) {
+        const problem = typeof ex.problem === "string" ? ex.problem : null;
+        const exitStatus = typeof ex.exit_status === "number" ? ex.exit_status : null;
+        if (problem === "cancelled")
+            return new BridgeError(_("The operation was cancelled"), exitStatus, true);
+        if (problem === "access-denied")
+            return new BridgeError(_("Administrative access is required for this operation"), exitStatus);
+        if (typeof ex.message === "string" && ex.message.trim())
+            return new BridgeError(ex.message.trim(), exitStatus);
+        if (problem)
+            return new BridgeError(cockpit.message(problem), exitStatus);
+    }
+    if (ex instanceof Error)
+        return new BridgeError(ex.message);
+    return new BridgeError(String(ex));
+}
+
+function spawnBridge(args: string[], input?: string): SpawnLike {
+    const proc = python.spawn(bridgeScript, args, { superuser: "try", err: "message" }) as unknown as SpawnLike;
+    if (input !== undefined)
+        proc.input(input, false);
+    return proc;
+}
+
+/** Run a bridge command and resolve with its (single) JSON document. */
+export function run<T>(command: string, args: string[] = [], input?: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        spawnBridge([command, ...args], input)
+                .then(out => {
+                    const parsed = lastJsonLine(out);
+                    if (parsed === undefined)
+                        reject(new BridgeError(cockpit.format(_("The bridge returned no data for $0"), command)));
+                    else if (isErrorObject(parsed))
+                        reject(new BridgeError(parsed.error));
+                    else
+                        resolve(parsed as T);
+                })
+                .catch((ex, data) => reject(toError(ex, data)));
+    });
+}
+
+export interface StreamHandle<T> {
+    promise: Promise<T>;
+    cancel: () => void;
+}
+
+/** Run a streaming bridge command, invoking onProgress for each progress line. */
+export function stream<T, P extends ProgressLine>(
+    command: string,
+    args: string[],
+    onProgress: (progress: P) => void,
+): StreamHandle<T> {
+    const proc = spawnBridge([command, ...args]);
+    let buffer = "";
+    let result: T | undefined;
+    let error: BridgeError | undefined;
+
+    const handleLine = (line: string) => {
+        const parsed = parseJsonLine(line);
+        if (isErrorObject(parsed))
+            error = new BridgeError(parsed.error);
+        else if (isDone<T>(parsed))
+            result = parsed.result;
+        else if (isProgress(parsed))
+            onProgress(parsed as P);
+    };
+
+    proc.stream(chunk => {
+        buffer += chunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        lines.forEach(handleLine);
+    });
+
+    const promise = new Promise<T>((resolve, reject) => {
+        proc
+                .then(() => {
+                    if (buffer.trim())
+                        handleLine(buffer);
+                    if (error)
+                        reject(error);
+                    else if (result !== undefined)
+                        resolve(result);
+                    else
+                        reject(new BridgeError(cockpit.format(_("The bridge returned no result for $0"), command)));
+                })
+                .catch((ex, data) => {
+                    if (buffer.trim())
+                        handleLine(buffer);
+                    reject(error ?? toError(ex, data));
+                });
+    });
+
+    return { promise, cancel: () => proc.close("cancelled") };
+}
+
+// ---------------------------------------------------------------------------
+// Backend and configuration
+// ---------------------------------------------------------------------------
+
+export const detectBackend = () => run<BackendInfo>("detect-backend");
+
+export const getConfig = () => run<Config>("get-config");
+
+export const setConfig = (patch: ConfigPatch) => run<Config>("set-config", [JSON.stringify(patch)]);
+
+// ---------------------------------------------------------------------------
+// Profiles and rules
+// ---------------------------------------------------------------------------
+
+function datastreamArgs(datastream?: string): string[] {
+    return datastream ? ["--datastream", datastream] : [];
+}
+
+export const listProfiles = (datastream?: string) =>
+    run<ProfileInfo[]>("list-profiles", datastreamArgs(datastream));
+
+export const profileRules = (profileId: string, datastream?: string) =>
+    run<ProfileRules>("profile-rules", [profileId, ...datastreamArgs(datastream)]);
+
+export const ruleInfo = (ruleId: string, datastream?: string) =>
+    run<RuleDetail>("rule-info", [ruleId, ...datastreamArgs(datastream)]);
+
+// ---------------------------------------------------------------------------
+// Scanning and results
+// ---------------------------------------------------------------------------
+
+export interface ScanOptions {
+    profileId?: string;
+    datastream?: string;
+    tailoringPath?: string;
+    noTailoring?: boolean;
+}
+
+export function scan(options: ScanOptions, onProgress: (progress: ScanProgress) => void): StreamHandle<ScanResult> {
     const args: string[] = [];
-    if (datastreamPath !== undefined) {
-        args.push(datastreamPath);
-    }
-    return spawn<ProfileInfo[]>("list-profiles", ...args);
-}
-
-/** List rules for a specific profile. */
-export function profileRules(profileId: string, datastreamPath?: string): Promise<RuleInfo[]> {
-    const args = [profileId];
-    if (datastreamPath !== undefined) {
-        args.push(datastreamPath);
-    }
-    return spawn<RuleInfo[]>("profile-rules", ...args);
-}
-
-/** Run an OpenSCAP scan. */
-export function scan(
-    profileId?: string,
-    options?: { tailoringPath?: string; datastream?: string },
-): Promise<ScanResult> {
-    const args: string[] = [];
-    if (profileId !== undefined) {
-        args.push(profileId);
-    }
-    if (options?.tailoringPath !== undefined) {
+    if (options.profileId)
+        args.push(options.profileId);
+    args.push(...datastreamArgs(options.datastream));
+    if (options.tailoringPath)
         args.push("--tailoring-path", options.tailoringPath);
-    }
-    if (options?.datastream !== undefined) {
-        args.push("--datastream", options.datastream);
-    }
-    return spawn<ScanResult>("scan", ...args);
+    if (options.noTailoring)
+        args.push("--no-tailoring");
+    args.push("--source", "interactive");
+    return stream<ScanResult, ScanProgress>("scan", args, onProgress);
 }
 
-/** Generate a bash remediation fix script for a profile. */
-export function generateFix(profileId: string, datastreamPath?: string): Promise<FixInfo> {
-    const args = [profileId];
-    if (datastreamPath !== undefined) {
-        args.push(datastreamPath);
-    }
-    return spawn<FixInfo>("generate-fix", ...args);
+export const listResults = () => run<ResultSummary[]>("list-results");
+
+export const getResult = (id: string) => run<ScanResult>("get-result", [id]);
+
+export const deleteResult = (id: string) => run<{ deleted: boolean; id: string }>("delete-result", [id]);
+
+export const generateReport = (id: string) => run<ReportInfo>("generate-report", [id]);
+
+// ---------------------------------------------------------------------------
+// Remediation
+// ---------------------------------------------------------------------------
+
+export const generateFix = (id: string) => run<FixInfo>("generate-fix", [id]);
+
+export function remediate(
+    id: string,
+    ruleIds: string[],
+    onProgress: (progress: RemediateProgress) => void,
+): StreamHandle<RemediateResult> {
+    return stream<RemediateResult, RemediateProgress>("remediate", [id, "--rules", JSON.stringify(ruleIds)], onProgress);
 }
 
-/** Apply a previously generated fix script. */
-export function applyFix(scriptPath: string): Promise<ApplyResult> {
-    return spawn<ApplyResult>("apply-fix", scriptPath);
+// ---------------------------------------------------------------------------
+// Tailoring
+// ---------------------------------------------------------------------------
+
+export const createTailoring = (baseProfileId: string, modifications: TailoringModification[], datastream?: string) =>
+    run<TailoringInfo>("create-tailoring",
+                       [baseProfileId, JSON.stringify(modifications), ...datastreamArgs(datastream)]);
+
+export const parseTailoring = (xml: string) => run<TailoringInfo>("parse-tailoring", ["-"], xml);
+
+export const parseTailoringFile = (path: string) => run<TailoringInfo>("parse-tailoring", [path]);
+
+export const importTailoring = (baseProfileId: string, xml: string) =>
+    run<TailoringInfo>("import-tailoring", [baseProfileId, "-"], xml);
+
+export const deleteTailoring = (baseProfileId: string) =>
+    run<{ deleted: boolean; profile_id: string }>("delete-tailoring", [baseProfileId]);
+
+// ---------------------------------------------------------------------------
+// Scheduled scans
+// ---------------------------------------------------------------------------
+
+export function manageTimer(action: "status" | "enable" | "disable" | "run-now"): Promise<TimerStatus>;
+export function manageTimer(action: "configure", config: TimerConfig): Promise<TimerStatus>;
+export function manageTimer(action: string, config?: TimerConfig): Promise<TimerStatus> {
+    const args = [action];
+    if (action === "configure" && config)
+        args.push(JSON.stringify(config));
+    return run<TimerStatus>("manage-timer", args);
 }
 
-/** Create a tailoring file from a base profile and modifications. */
-export function createTailoring(
-    baseProfileId: string,
-    modifications: TailoringModification[],
-): Promise<TailoringResult> {
-    return spawn<TailoringResult>(
-        "create-tailoring",
-        baseProfileId,
-        JSON.stringify(modifications),
-    );
-}
+export const validateCalendar = (spec: string) => run<CalendarCheck>("validate-calendar", [spec]);
 
-/** Parse an existing tailoring XML file. */
-export function parseTailoring(tailoringPath: string): Promise<ParsedTailoring> {
-    return spawn<ParsedTailoring>("parse-tailoring", tailoringPath);
-}
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
 
-/** Manage the systemd scan timer (status/enable/disable/configure). */
-export function manageTimer(
-    action: "status" | "enable" | "disable",
-): Promise<TimerStatus>;
-export function manageTimer(
-    action: "configure",
-    config: { frequency?: string; day?: string; time?: string; profile_id?: string },
-): Promise<TimerStatus>;
-export function manageTimer(
-    action: string,
-    config?: { frequency?: string; day?: string; time?: string; profile_id?: string },
-): Promise<TimerStatus> {
-    if (action === "configure" && config !== undefined) {
-        return spawn<TimerStatus>("manage-timer", action, JSON.stringify(config));
-    }
-    return spawn<TimerStatus>("manage-timer", action);
-}
-
-/** Read the persistent config from /var/lib/cockpit-oscap/config.json. */
-export function loadConfig(): Promise<Config> {
-    return cockpit
-            .file(CONFIG_PATH, { superuser: "try" })
-            .read()
+/** Read a file owned by root (ARF results, tailoring XML) as text. */
+export function readFile(path: string): Promise<string> {
+    return cockpit.file(path, { superuser: "try" }).read()
             .then(content => {
-                if (content === null || content === undefined) {
-                    return {} as Config;
-                }
-                return JSON.parse(content) as Config;
+                if (content === null || content === undefined)
+                    throw new BridgeError(cockpit.format(_("$0 does not exist"), path));
+                return content;
             });
 }
