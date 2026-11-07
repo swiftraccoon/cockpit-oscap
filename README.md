@@ -68,6 +68,9 @@ scheduled scans.
   contribute to score trends or comparisons. This also applies to older saved
   results whose numeric score was recorded as zero; an evaluated all-fail scan
   still scores 0%.
+  Re-scanning a saved result requires its recorded datastream to remain available;
+  restore missing content or explicitly select another datastream. Older results
+  without a recorded content path use the configured default.
 - **Guided remediation** – review the bash fix generated for each failed rule,
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),

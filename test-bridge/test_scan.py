@@ -694,6 +694,26 @@ def test_scan_skips_tailoring_of_unknown_profile(bridge):
     assert request["temp_files"] == []
 
 
+def test_rescan_requires_its_recorded_datastream_unless_explicitly_overridden(bridge, datastream, tmp_path):
+    result_id = "2026-04-08T025531-base"
+    missing = str(tmp_path / "missing-original.xml")
+    _write_result(bridge, result_id, datastream=missing)
+    bridge.save_config({"datastream": datastream})
+
+    # Another configured datastream must not silently replace the recorded assessment content.
+    with pytest.raises(bridge.BridgeError, match=r"original datastream.*no longer available") as caught:
+        bridge._resolve_scan_request(["--rescan-of", result_id])
+    assert missing in str(caught.value)
+    assert "restore it or explicitly select another datastream" in str(caught.value)
+
+    request = bridge._resolve_scan_request(["--rescan-of", result_id, "--datastream", datastream])
+    assert request["datastream"] == datastream
+
+    # Legacy results that never recorded their content can still use the configured default.
+    _write_result(bridge, result_id, datastream="")
+    assert bridge._resolve_scan_request(["--rescan-of", result_id])["datastream"] == datastream
+
+
 def test_rescan_reuses_tailoring_recorded_in_arf(bridge, datastream):
     result_id = "2026-04-08T025531-base"
     _write_result(bridge, result_id, base_profile_id=PROFILE_BASE, profile_id=f"{PROFILE_BASE}_customized",

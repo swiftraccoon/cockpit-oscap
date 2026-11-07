@@ -2018,8 +2018,11 @@ def _resolve_scan_request(args: list[str]) -> ScanRequest:
         raise BridgeError(f"invalid profile id: {base_profile_id}")
 
     requested_ds = _opt(args, "--datastream")
-    if previous is not None and requested_ds is None and Path(previous["datastream"]).is_file():
+    if previous is not None and requested_ds is None and previous["datastream"]:
         requested_ds = previous["datastream"]
+        if not Path(requested_ds).is_file():
+            raise BridgeError(f"the original datastream for this scan is no longer available: {requested_ds}; "
+                              "restore it or explicitly select another datastream")
     datastream = resolve_datastream(requested_ds, config)
     benchmark = load_benchmark(datastream)
     index = _BenchmarkIndex(benchmark)
