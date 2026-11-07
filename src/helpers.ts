@@ -131,6 +131,31 @@ export function scoredTotal(counts: ResultCounts): number {
     return counts.pass + counts.fail + counts.error;
 }
 
+/** A zero denominator means no assessment, even when an older result stored a numeric zero score. */
+export function hasAssessment(counts: ResultCounts): boolean {
+    return scoredTotal(counts) > 0;
+}
+
+/** Completed assessments that can contribute to score trends and comparisons. */
+export function assessedScans<T extends { status: string; counts: ResultCounts }>(scans: T[]): T[] {
+    return scans.filter(scan => scan.status === "complete" && hasAssessment(scan.counts));
+}
+
+export function assessmentLabel(counts: ResultCounts): string {
+    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    return total > 0 && counts.notapplicable === total ? _("No applicable rules") : _("Not assessed");
+}
+
+/** Score presentation must use rule coverage, not the legacy numeric score alone. */
+export function formatAssessmentScore(score: number, counts: ResultCounts): string {
+    return hasAssessment(counts) ? formatScore(score) : assessmentLabel(counts);
+}
+
+export function assessmentMessage(counts: ResultCounts): string {
+    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    return cockpit.format(_("0 of $0 selected rules contributed to a compliance score (pass, fail or error). Inspect the rule results and scanner messages. Check that the profile and SCAP content support this operating system and version, including platform applicability in the report. Remediation requires failed rules from an applicable assessment."), total);
+}
+
 /** A copy of `set` with `member` added or removed. */
 export function withMember<T>(set: Set<T>, member: T, present: boolean): Set<T> {
     const next = new Set(set);
@@ -218,15 +243,17 @@ export function sameSeries(a: SeriesMember, b: SeriesMember): boolean {
 }
 
 /**
- * The scans a result can be compared with: complete scans of its series taken before it, newest
- * first (so the first one is the immediately preceding scan).
+ * The scans an assessment can be compared with: complete assessments of its series taken before
+ * it, newest first (so the first one is the immediately preceding assessment).
  */
-export function comparableScans(result: SeriesMember & { id: string; timestamp: string },
+export function comparableScans(result: SeriesMember & { id: string; timestamp: string; counts: ResultCounts },
     summaries: ResultSummary[]): ResultSummary[] {
+    if (!hasAssessment(result.counts))
+        return [];
     const at = parseTimestamp(result.timestamp)?.getTime() ?? 0;
-    const timed = summaries
+    const timed = assessedScans(summaries)
             .map(s => ({ s, time: parseTimestamp(s.timestamp)?.getTime() ?? 0 }))
-            .filter(({ s, time }) => s.id !== result.id && sameSeries(s, result) && s.status === "complete" && time < at);
+            .filter(({ s, time }) => s.id !== result.id && sameSeries(s, result) && time < at);
     return timed.sort((a, b) => b.time - a.time).map(({ s }) => s);
 }
 

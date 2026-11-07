@@ -30,7 +30,7 @@ import { ResultDetailPage } from "./pages/ResultDetailPage";
 import { ResultsPage } from "./pages/ResultsPage";
 import { SchedulePage } from "./pages/SchedulePage";
 import { TailoringEditor } from "./pages/TailoringEditor";
-import { formatScore, scoreVariant } from "./helpers";
+import { assessmentLabel, formatScore, hasAssessment, scoreVariant } from "./helpers";
 import type { BackendInfo, ResultSummary } from "./types";
 
 const _ = cockpit.gettext;
@@ -42,6 +42,8 @@ function complianceStatus(results: ResultSummary[], scanStatus: string | undefin
     if (scanStatus === "failed")
         return { type: "warning", title: _("The last compliance scan failed") };
     const latest = results.find(r => r.status === "complete");
+    if (latest && !hasAssessment(latest.counts))
+        return { type: "warning", title: assessmentLabel(latest.counts) };
     if (latest && scoreVariant(latest.score) === "danger")
         return { type: "warning", title: cockpit.format(_("Compliance score $0"), formatScore(latest.score)) };
     return null;

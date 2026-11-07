@@ -262,7 +262,7 @@ key={profile.id} id={`profile-${safeFilename(short)}`}
                                                         {last
                                                             ? (
                                                                 <>
-                                                                    <ScoreLabel score={last.score} />
+                                                                    <ScoreLabel score={last.score} counts={last.counts} />
                                                                     {last.tailored && <TailoredLabel />}
                                                                     <Button
 variant="link" isInline className="oscap-small"

@@ -32,6 +32,7 @@ import { deleteResult, getResult, listRemediations, listResults, readFile } from
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
 import { ActionsMenu } from "../components/ActionsMenu";
+import { AssessmentWarning } from "../components/AssessmentWarning";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ExcludeRuleDialog } from "../components/ExcludeRuleDialog";
 import { RemediationDialog } from "../components/RemediationDialog";
@@ -54,7 +55,8 @@ import {
     downloadFile,
     comparableScans,
     errorMessage,
-    formatScore,
+    formatAssessmentScore,
+    hasAssessment,
     matchesSearch,
     normalizeResult,
     normalizeSeverity,
@@ -66,7 +68,7 @@ import {
     scoredTotal,
     severityLabel,
 } from "../helpers";
-import type { RemediationRun, ResultSummary, RuleExclusion, RuleResultItem, ScanResult } from "../types";
+import type { RemediationRun, ResultCounts, ResultSummary, RuleExclusion, RuleResultItem, ScanResult } from "../types";
 import { downloadArf, downloadBundle, downloadCsv, downloadFix, downloadReport, openReport } from "./ResultsPage";
 
 const _ = cockpit.gettext;
@@ -258,9 +260,9 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
 
     const loaded: ScanResult = result;
     const scannedAt = parseTimestamp(loaded.timestamp);
-    const scanLabel = (summary: { timestamp: string; score: number }) => {
+    const scanLabel = (summary: { timestamp: string; score: number; counts: ResultCounts }) => {
         const at = parseTimestamp(summary.timestamp);
-        return cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : summary.timestamp, formatScore(summary.score));
+        return cockpit.format("$0 · $1", at ? timeformat.dateTime(at) : summary.timestamp, formatAssessmentScore(summary.score, summary.counts));
     };
     // in the location so a link keeps it, replacing rather than pushing: a pick is not a page
     const compareWith = (id: string) => cockpit.location.replace(["results", loaded.id], { ...options, compare: id });
@@ -408,10 +410,11 @@ export const ResultDetailPage = ({ resultId }: { resultId: string }) => {
             </PageSection>
             <PageSection hasBodyWrapper={false} isFilled id="result-detail">
                 <Stack hasGutter>
+                    {!hasAssessment(result.counts) && <StackItem><AssessmentWarning counts={result.counts} /></StackItem>}
                     <StackItem>
                         <Card className="ct-card oscap-summary-card" id="result-summary">
                             <CardBody>
-                                <ScoreValue score={result.score} />
+                                <ScoreValue score={result.score} counts={result.counts} />
                                 <Stat label={_("Profile")}>
                                     {title}{result.tailored && <> {" "}<TailoredLabel /></>}
                                 </Stat>

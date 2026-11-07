@@ -30,7 +30,7 @@ scheduled scans.
   scan and a score trend across the last scans of the profile, the rules that
   need attention (each linking straight to its details), the active profile
   and the state of scheduled scanning at a glance. Cockpit's navigation flags
-  the page when the last scan failed or the score is poor.
+  the page when the last scan failed, no rules were assessed, or the score is poor.
 - **Profiles** – every profile in the SCAP content installed on the system,
   with the OS matched automatically (Fedora, RHEL and derivatives, Debian,
   Ubuntu, openSUSE/SLE, Amazon Linux). Pick the active profile or choose
@@ -60,6 +60,14 @@ scheduled scans.
   right there, with a justification; later scans list the excluded rules with
   their justifications next to the score. Results can be deleted one at a time
   or in bulk, and a link can point at one rule of one scan.
+  A completed scan with no pass, fail or error results is shown as **No
+  applicable rules** when every selected rule is not applicable, or **Not
+  assessed** otherwise. It has no compliance score: check the profile, SCAP
+  content and platform applicability before interpreting it or choosing fixes.
+  Such scans remain available with their raw results and reports, but do not
+  contribute to score trends or comparisons. This also applies to older saved
+  results whose numeric score was recorded as zero; an evaluated all-fail scan
+  still scores 0%.
 - **Guided remediation** – review the bash fix generated for each failed rule,
   with a risk classification (authentication, SSH, firewall, SELinux, boot
   loader and mount changes are flagged high risk and unchecked by default),

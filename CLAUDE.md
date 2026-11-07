@@ -113,7 +113,7 @@ rule, `compare` to pick the earlier scan compared with), `schedule`. Scanning is
 dialog available from every tab (the old `scan` route redirects to `overview`).
 `AppContext` (`useApp()`) exposes backend info, a `version` counter pages reload on,
 `superuser` state and `runScan()`. The shell also publishes a Cockpit page status
-(`notifications.page_status`) when the last scan failed or the latest score is poor;
+(`notifications.page_status`) when the last scan failed, no rules were assessed, or the latest score is poor;
 the manifest preloads the page so the navigation icon appears without visiting it.
 `RuleDetails` fetches a rule only while its row is expanded and caches per
 datastream; on a result page it also loads the rule's history (`rule-history`, one

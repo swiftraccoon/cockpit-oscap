@@ -29,6 +29,7 @@ import * as timeformat from "timeformat";
 import { getConfig, getResult, listProfiles, listResults, manageTimer } from "../api";
 import { useApp } from "../app";
 import { useAsync } from "../app-hooks";
+import { AssessmentWarning } from "../components/AssessmentWarning";
 import { ScoreTrend } from "../components/ScoreTrend";
 import type { TrendPoint } from "../components/ScoreTrend";
 import {
@@ -42,7 +43,7 @@ import {
     When,
 } from "../components/labels";
 import { ErrorState, Loading } from "../components/states";
-import { compareSeverity, parseTimestamp, sameSeries, scoredTotal } from "../helpers";
+import { assessedScans, assessmentLabel, compareSeverity, comparableScans, hasAssessment, parseTimestamp, sameSeries, scoredTotal } from "../helpers";
 import type { RuleResultItem, TimerStatus } from "../types";
 
 const _ = cockpit.gettext;
@@ -118,20 +119,23 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
         );
     }
 
-    const previous = results.find(r => r.id !== latest.id && r.status === "complete" && sameSeries(r, latest));
+    const previous = comparableScans(latest, results)[0];
     const scannedAt = parseTimestamp(latest.timestamp);
     const failed: RuleResultItem[] = latest.results
             .filter(r => r.result === "fail" || r.result === "error")
             .sort((a, b) => (a.result === b.result ? compareSeverity(a.severity, b.severity) : a.result === "fail" ? -1 : 1));
     const recent = results.slice(0, RECENT_SCANS);
-    const trend: TrendPoint[] = results
-            .filter(r => sameSeries(r, latest) && r.status === "complete")
+    const trend: TrendPoint[] = assessedScans(results)
+            .filter(r => sameSeries(r, latest))
             .slice(0, TREND_POINTS)
             .reverse()
             .map(r => ({ id: r.id, timestamp: r.timestamp, score: r.score }));
 
     return (
         <Stack hasGutter>
+            {!hasAssessment(latest.counts) && (
+                <StackItem><AssessmentWarning counts={latest.counts} /></StackItem>
+            )}
             <StackItem>
                 <Grid hasGutter>
                     <GridItem md={4}>
@@ -139,7 +143,7 @@ id="overview-run-scan" variant="primary" onClick={() => app.runScan()}
                             <CardTitle>{_("Latest scan")}</CardTitle>
                             <CardBody>
                                 <Stack hasGutter>
-                                    <StackItem><ScoreValue score={latest.score} /></StackItem>
+                                    <StackItem><ScoreValue score={latest.score} counts={latest.counts} /></StackItem>
                                     <StackItem>
                                         <span className="oscap-inline-list">
                                             <CountLabels counts={latest.counts} />
@@ -277,12 +281,14 @@ variant="link" isInline
                                 {failed.length === 0
                                     ? (
                                         <EmptyStatePanel
-                                            icon={CheckCircleIcon}
-                                            title={_("All evaluated rules passed")}
-                                            paragraph={cockpit.format(
-                                                cockpit.ngettext("$0 rule was evaluated.", "$0 rules were evaluated.",
-                                                                 scoredTotal(latest.counts)),
-                                                scoredTotal(latest.counts))}
+                                            icon={hasAssessment(latest.counts) ? CheckCircleIcon : ShieldAltIcon}
+                                            title={hasAssessment(latest.counts) ? _("All evaluated rules passed") : assessmentLabel(latest.counts)}
+                                            paragraph={hasAssessment(latest.counts)
+                                                ? cockpit.format(
+                                                    cockpit.ngettext("$0 rule was evaluated.", "$0 rules were evaluated.",
+                                                                     scoredTotal(latest.counts)),
+                                                    scoredTotal(latest.counts))
+                                                : _("Inspect this scan's rule results and platform applicability before choosing remediation.")}
                                         />
                                     )
                                     : (
@@ -345,7 +351,7 @@ variant="link" isInline
                                                         </div>
                                                     ),
                                                 },
-                                                { title: <ScoreLabel score={summary.score} /> },
+                                                { title: <ScoreLabel score={summary.score} counts={summary.counts} /> },
                                             ],
                                         };
                                     })}

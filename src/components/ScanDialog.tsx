@@ -23,7 +23,7 @@ import { useDialogs } from "dialogs";
 import { getConfig, listProfiles, listResults, scan } from "../api";
 import type { StreamHandle } from "../api";
 import { useAsync } from "../app-hooks";
-import { errorMessage, formatDuration, ruleShortName } from "../helpers";
+import { assessmentLabel, assessmentMessage, errorMessage, formatDuration, hasAssessment, ruleShortName } from "../helpers";
 import type { ProfileInfo, ResultSummary, ScanProgress, ScanResult } from "../types";
 import { ScanEta } from "./ScanEta";
 import { CountLabels, ScoreValue } from "./labels";
@@ -193,13 +193,17 @@ export const ScanDialog = ({ initialProfileId, onFinished }: {
         body = (
             <Stack hasGutter>
                 <StackItem>
-                    <Alert component="h2" variant="success" isInline title={_("Scan complete")}>
+                    <Alert
+component="h2" variant={hasAssessment(result.counts) ? "success" : "warning"} isInline
+                           title={hasAssessment(result.counts) ? _("Scan complete") : assessmentLabel(result.counts)}
+                    >
                         {result.profile_title}
+                        {!hasAssessment(result.counts) && <p>{assessmentMessage(result.counts)}</p>}
                     </Alert>
                 </StackItem>
                 <StackItem>
                     <div className="oscap-inline-list" style={{ gap: "var(--pf-t--global--spacer--lg)" }}>
-                        <ScoreValue score={result.score} />
+                        <ScoreValue score={result.score} counts={result.counts} />
                         <CountLabels counts={result.counts} />
                     </div>
                 </StackItem>

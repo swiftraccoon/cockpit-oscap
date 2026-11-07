@@ -25,7 +25,7 @@ import * as timeformat from "timeformat";
 
 import { ruleHistory, ruleInfo } from "../api";
 import { useAsync } from "../app-hooks";
-import { describeHistory, formatScore, historyResultLabel, normalizeResult, parseTimestamp, referenceSource } from "../helpers";
+import { describeHistory, formatAssessmentScore, historyResultLabel, normalizeResult, parseTimestamp, referenceSource } from "../helpers";
 import type { Reference, RuleDetail, RuleHistoryPoint } from "../types";
 
 const _ = cockpit.gettext;
@@ -138,7 +138,7 @@ const RuleHistory = ({ ruleId, points, currentId }: { ruleId: string; points: Ru
                 {ordered.map(point => {
                     const at = parseTimestamp(point.timestamp);
                     const label = cockpit.format("$0 · $1 · $2", at ? timeformat.dateTime(at) : point.timestamp,
-                                                 historyResultLabel(point.result), formatScore(point.score));
+                                                 historyResultLabel(point.result), formatAssessmentScore(point.score, point.counts));
                     const kind = point.result === "notselected" ? "notselected" : normalizeResult(point.result);
                     const current = point.id === currentId;
                     return (

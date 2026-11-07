@@ -15,7 +15,8 @@ import * as timeformat from "timeformat";
 
 import {
     SEVERITIES,
-    formatScore,
+    formatAssessmentScore,
+    hasAssessment,
     normalizeResult,
     normalizeSeverity,
     parseTimestamp,
@@ -140,17 +141,19 @@ export const RiskLabel = ({ level, reason }: { level: string; reason?: string })
     return reason ? <Tooltip content={reason}>{label}</Tooltip> : label;
 };
 
-/** A compliance score, colored by threshold. */
-export const ScoreValue = ({ score, size = "lg" }: { score: number; size?: "lg" | "md" }) => (
-    <span className={`oscap-score oscap-score-${size} oscap-score-${scoreVariant(score)}`}>
-        {formatScore(score)}
+/** A compliance score colored by threshold, or a neutral label when coverage is empty. */
+export const ScoreValue = ({ score, counts, size = "lg" }: { score: number; counts: ResultCounts; size?: "lg" | "md" }) => (
+    <span className={`oscap-score oscap-score-${size} oscap-score-${hasAssessment(counts) ? scoreVariant(score) : "unassessed"}`}>
+        {formatAssessmentScore(score, counts)}
     </span>
 );
 
 const SCORE_LABEL_COLORS: Record<string, LabelColor> = { success: "green", warning: "orange", danger: "red" };
 
-export const ScoreLabel = ({ score }: { score: number }) => (
-    <Label color={SCORE_LABEL_COLORS[scoreVariant(score)]} isCompact>{formatScore(score)}</Label>
+export const ScoreLabel = ({ score, counts }: { score: number; counts: ResultCounts }) => (
+    <Label color={hasAssessment(counts) ? SCORE_LABEL_COLORS[scoreVariant(score)] : "grey"} isCompact>
+        {formatAssessmentScore(score, counts)}
+    </Label>
 );
 
 export const ScanStatusLabel = ({ status }: { status: string }) => {

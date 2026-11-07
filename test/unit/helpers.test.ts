@@ -6,14 +6,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+    assessedScans,
+    assessmentLabel,
+    assessmentMessage,
     comparableScans,
     countHistory,
     decodeBase64,
     describeHistory,
     emptyCounts,
     formatDuration,
+    formatAssessmentScore,
     formatScore,
     historyResultLabel,
+    hasAssessment,
     matchesSearch,
     parseTimestamp,
     profileChoices,
@@ -41,6 +46,44 @@ describe("score thresholds", () => {
     it("formats whole and fractional scores", () => {
         assert.equal(formatScore(100), "100%");
         assert.equal(formatScore(56.789), "56.8%");
+    });
+});
+
+describe("assessment coverage", () => {
+    it("excludes unassessed and interrupted results from score series without removing genuine zero scores", () => {
+        const scans = [
+            { id: "all-na", status: "complete", score: 0, counts: { ...emptyCounts(), notapplicable: 433 } },
+            { id: "unchecked", status: "complete", score: 0, counts: { ...emptyCounts(), notchecked: 2 } },
+            { id: "all-fail", status: "complete", score: 0, counts: { ...emptyCounts(), fail: 433 } },
+            { id: "interrupted", status: "interrupted", score: 100, counts: { ...emptyCounts(), pass: 2 } },
+            { id: "all-pass", status: "complete", score: 100, counts: { ...emptyCounts(), pass: 2 } },
+        ];
+        assert.deepEqual(assessedScans(scans).map(scan => scan.id), ["all-fail", "all-pass"]);
+        assert.equal(scans[0]?.id, "all-na");  // filtering a score series preserves the latest raw result
+    });
+
+    it("does not present a legacy zero score as noncompliance when all rules are not applicable", () => {
+        const counts = { ...emptyCounts(), notapplicable: 433 };
+        assert.equal(hasAssessment(counts), false);
+        assert.equal(assessmentLabel(counts), "No applicable rules");
+        assert.equal(formatAssessmentScore(0, counts), "No applicable rules");
+        assert.match(assessmentMessage(counts), /0 of 433 selected rules/);
+        assert.match(assessmentMessage(counts), /profile and SCAP content support this operating system and version/);
+        assert.match(assessmentMessage(counts), /platform applicability in the report/);
+    });
+
+    it("keeps a genuine all-fail assessment at zero percent", () => {
+        const counts = { ...emptyCounts(), fail: 433 };
+        assert.equal(hasAssessment(counts), true);
+        assert.equal(formatAssessmentScore(0, counts), "0%");
+    });
+
+    it("distinguishes empty and unchecked results from all-not-applicable results", () => {
+        for (const counts of [emptyCounts(), { ...emptyCounts(), notchecked: 2 }, { ...emptyCounts(), notapplicable: 1, unknown: 1 }]) {
+            assert.equal(hasAssessment(counts), false);
+            assert.equal(formatAssessmentScore(0, counts), "Not assessed");
+        }
+        assert.equal(hasAssessment({ ...emptyCounts(), error: 1 }), true);
     });
 });
 
@@ -146,8 +189,8 @@ describe("small helpers", () => {
             datastream,
             duration_seconds: 0,
             score: 0,
-            counts: emptyCounts(),
-            total: 0,
+            counts: { ...emptyCounts(), fail: 1 },
+            total: 1,
             status,
             has_arf: true,
         });
@@ -156,6 +199,8 @@ describe("small helpers", () => {
             scan("2026-04-06T000000-cis", "cis"),  // later: not a comparison
             current,
             scan("2026-04-03T000000-cis", "cis"),
+            { ...scan("2026-04-04T000000-cis-na", "cis"), counts: { ...emptyCounts(), notapplicable: 433 } },
+            { ...scan("2026-04-04T000000-cis-unchecked", "cis"), counts: { ...emptyCounts(), notchecked: 2 } },
             scan("2026-04-04T000000-cis", "cis", "interrupted"),
             scan("2026-04-04T000000-anssi", "anssi"),
             scan("2026-04-02T000000-cis", "cis", "complete", "/other.xml"),
@@ -164,6 +209,7 @@ describe("small helpers", () => {
         assert.deepEqual(comparableScans(current, summaries).map(s => s.id),
                          ["2026-04-03T000000-cis", "2026-04-01T000000-cis"]);
         assert.deepEqual(comparableScans(current, [current]), []);
+        assert.deepEqual(comparableScans({ ...current, counts: { ...emptyCounts(), notapplicable: 433 } }, summaries), []);
     });
 
     it("names each scanned profile after its newest scan without customizations", () => {

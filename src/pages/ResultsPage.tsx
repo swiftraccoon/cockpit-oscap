@@ -31,6 +31,7 @@ import {
     decodeBase64,
     downloadFile,
     errorMessage,
+    hasAssessment,
     matchesSearch,
     parseTimestamp,
     profileChoices,
@@ -222,7 +223,7 @@ variant="primary" onClick={() => app.runScan()}
             case 1:
                 return (sa.profile_title || sa.profile_id).localeCompare(sb.profile_title || sb.profile_id);
             case 2:
-                return sa.score - sb.score;
+                return (hasAssessment(sa.counts) ? sa.score : -1) - (hasAssessment(sb.counts) ? sb.score : -1);
             case 3:
                 return sa.counts.fail - sb.counts.fail;
             case 4:
@@ -339,7 +340,7 @@ variant="primary" onClick={() => app.runScan()}
                                         </>
                                     ),
                                 },
-                                { title: <ScoreLabel score={summary.score} /> },
+                                { title: <ScoreLabel score={summary.score} counts={summary.counts} /> },
                                 { title: <CountLabels counts={summary.counts} /> },
                                 { title: <ScanStatusLabel status={summary.status} /> },
                                 {

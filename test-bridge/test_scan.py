@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 import zipfile
 from typing import Any
 
@@ -257,6 +258,64 @@ def test_export_bundle_without_scanner_or_access(bridge, monkeypatch):
         csv_lines = bundle.read("rules.csv").decode().split("\r\n")
         assert csv_lines[1] == f'{RULE_AUDIT},\'=1+1,fail,medium,,"a, ""b"""'
         assert csv_lines[2] == f"{RULE_ROOT_LOGIN},'-x,pass,high,,'@sum"
+
+
+@pytest.mark.parametrize(("outcome", "label"), [
+    ("notapplicable", "No applicable rules"),
+    ("notchecked", "Not assessed"),
+    ("informational", "Not assessed"),
+    ("unknown", "Not assessed"),
+    ("fixed", "Not assessed"),
+    ("notselected", "Not assessed"),
+    ("fail", "0.0%"),
+])
+@pytest.mark.parametrize("stored_counts", [False, True])
+def test_evidence_score_uses_counts_for_zero_scores_and_keeps_legacy_api(
+        bridge, tmp_path, outcome, label, stored_counts):
+    root = ET.fromstring(SYNTHETIC_ARF)  # noqa: S314 - Static synthetic fixture, never external content.
+    for rule in root.iter(bridge.TAG_RULE_RESULT):
+        if rule.get("idref") != RULE_NEVER:
+            rule.find(bridge.TAG_RESULT).text = outcome
+    arf = tmp_path / "unassessed.xml"
+    ET.ElementTree(root).write(arf)
+    parsed = bridge.parse_arf(str(arf))
+    assert parsed["score"] == 0.0
+    counts = bridge._count_results(parsed["results"])
+    saved = {"counts": counts} if stored_counts else {}
+    result_id = "2026-04-08T025531-base"
+    _write_result(bridge, result_id, score=parsed["score"], results=parsed["results"], **saved)
+    result = bridge._load_result(result_id)
+    assert result["score"] == 0.0
+    assert result["counts"] == counts
+    _name, content = bridge.export_bundle(result)
+    with zipfile.ZipFile(io.BytesIO(content)) as bundle:
+        summary = json.loads(bundle.read("summary.json"))
+        assert summary["score"] == 0.0
+        assert summary["counts"] == counts
+        readme = bundle.read("README.txt").decode()
+    assert f"Score:       {label} (" in readme
+    total = 0 if outcome == "notselected" else 4
+    assessed = total if outcome == "fail" else 0
+    assert f"Coverage:    {assessed} of {total} selected rules assessed;" in readme
+    if assessed:
+        assert "platform/CPE" not in readme
+    else:
+        assert "0.0%" not in readme
+        assert "content and profile match the system's OS, version and architecture" in readme
+        assert "platform/CPE applicability checks and scanner messages" in readme
+        assert "coverage alone does not establish a mismatch" in readme
+
+
+def test_rule_history_carries_counts_to_distinguish_unassessed_from_failed_zero(bridge):
+    for day, outcome in (("01", "notapplicable"), ("02", "fail")):
+        _write_result(bridge, f"2026-04-{day}T000000-base", base_profile_id=PROFILE_BASE, score=0.0,
+                      results=[{"rule_id": RULE_AUDIT, "result": outcome, "title": "A", "severity": "medium"}])
+    history = bridge.rule_history(RULE_AUDIT, PROFILE_BASE, 10)
+    assert [point["score"] for point in history] == [0.0, 0.0]
+    assert history[0]["result"] == "fail"
+    assert history[0]["counts"] == dict.fromkeys(bridge.RESULT_KINDS, 0) | {"fail": 1}
+    assert history[1]["result"] == "notapplicable"
+    assert history[1]["counts"] == dict.fromkeys(bridge.RESULT_KINDS, 0) | {"notapplicable": 1}
 
 
 def test_rule_history_follows_one_rule_across_a_profiles_scans(run_bridge, bridge):

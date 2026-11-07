@@ -343,9 +343,9 @@ variant={remaining.length === 0 ? "success" : "warning"} isInline
                     >
                         <span className="oscap-inline-list" style={{ gap: "var(--pf-t--global--spacer--md)" }}>
                             <span>{_("New score")}</span>
-                            <ScoreValue score={rescan.score} size="md" />
+                            <ScoreValue score={rescan.score} counts={rescan.counts} size="md" />
                             <span className="oscap-muted">
-                                {fmt_to_fragments(_("(was $0)"), <ScoreValue score={result.score} size="md" />)}
+                                {fmt_to_fragments(_("(was $0)"), <ScoreValue score={result.score} counts={result.counts} size="md" />)}
                             </span>
                         </span>
                     </Alert>

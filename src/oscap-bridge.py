@@ -299,6 +299,7 @@ class RuleHistoryPoint(TypedDict):
     id: str
     timestamp: str
     score: float
+    counts: dict[str, int]
     result: str  # "notselected" when the scan skipped the rule
 
 
@@ -1758,7 +1759,7 @@ def rule_history(rule_id: str, base_profile_id: str, limit: int, datastream: str
             continue
         outcome = next((r["result"] for r in result["results"] if r["rule_id"] == rule_id), RESULT_NOTSELECTED)
         points.append(RuleHistoryPoint(id=result["id"], timestamp=result["timestamp"], score=result["score"],
-                                       result=outcome))
+                                       counts=result["counts"], result=outcome))
         if len(points) >= limit:
             break
     return points
@@ -2544,24 +2545,40 @@ _BUNDLE_PRIVATE_KEYS = frozenset(("arf_path", "json_path", "tailoring_path", "cu
 
 def _bundle_readme(result: ScanResult, members: list[str], notes: list[str]) -> str:
     """A plain-text cover sheet for whoever receives the bundle."""
+    counts = result["counts"]
+    assessed = sum(counts.get(kind, 0) for kind in SCORED_RESULTS)
+    selected = sum(counts.get(kind, 0) for kind in RESULT_KINDS)
+    not_applicable = counts.get("notapplicable", 0)
+    all_not_applicable = selected > 0 and not_applicable == selected
+    score = (f"{result['score']:.1f}%" if assessed else
+             "No applicable rules" if all_not_applicable else "Not assessed")
     lines = [
         f"Compliance evidence for {os.uname().nodename}",
         "=" * 72,
         "",
         f"Profile:     {result['profile_title'] or result['profile_id']} ({result['profile_id']})",
         f"Scanned:     {result['timestamp']}",
-        (f"Score:       {result['score']:.1f}% ({result['counts'].get('pass', 0)} passed, "
-         f"{result['counts'].get('fail', 0)} failed, {result['counts'].get('error', 0)} errors)"),
+        (f"Score:       {score} ({counts.get('pass', 0)} passed, "
+         f"{counts.get('fail', 0)} failed, {counts.get('error', 0)} errors)"),
+        (f"Coverage:    {assessed} of {selected} selected rules assessed; {not_applicable} not applicable; "
+         f"{selected - assessed - not_applicable} other results"),
         f"Status:      {result['status']}",
         f"Content:     {result['datastream'] or 'unknown'}"
         + (f" (benchmark {result['benchmark_id']} {result['benchmark_version']})" if result["benchmark_id"] else ""),
         f"System:      {_read_os_release().get('PRETTY_NAME') or 'unknown'}",
         f"Customized:  {'yes' if result['tailored'] else 'no'}",
         f"Generated:   {_iso(_now_utc())} by cockpit-oscap (bridge API {API_VERSION})",
-        "",
-        "Files",
-        "-----",
     ]
+    if not assessed:
+        lines += [
+            "",
+            "All selected rules were reported not applicable." if all_not_applicable else
+            "No selected rules produced a scored pass, fail or error result.",
+            "Verify that the content and profile match the system's OS, version and architecture.",
+            ("Review platform/CPE applicability checks and scanner messages; "
+             "coverage alone does not establish a mismatch."),
+        ]
+    lines += ["", "Files", "-----"]
     descriptions = {
         "summary.json": "the scan as the Compliance page records it, every rule result and the excluded rules",
         "rules.csv": "one row per evaluated rule",

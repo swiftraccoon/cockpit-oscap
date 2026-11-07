@@ -176,6 +176,7 @@ export interface RuleHistoryPoint {
     id: string;
     timestamp: string;
     score: number;
+    counts: ResultCounts;
     result: string;
 }
 
